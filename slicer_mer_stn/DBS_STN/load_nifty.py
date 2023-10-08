@@ -1,9 +1,8 @@
 import logging
 import os
 from typing import Annotated, Optional
-import pathlib
 import vtk
-
+import tempfile
 import slicer
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
@@ -11,6 +10,8 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
     WithinRange,
 )
+from pathlib import Path
+import slicer_preprocessing
 from utils_file import get_images_in_folder
 
 from slicer import vtkMRMLScalarVolumeNode
@@ -28,9 +29,11 @@ class load_nifty(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "DBS Subcortical electrode localisation"  # TODO: make this more human readable by adding spaces
-        self.parent.categories = ["Examples"]  # TODO: set categories (folders where the module shows up in the module selector)
+        self.parent.categories = [
+            "Examples"]  # TODO: set categories (folders where the module shows up in the module selector)
         self.parent.dependencies = []  # TODO: add here list of module names that this module requires
-        self.parent.contributors = ["John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
+        self.parent.contributors = [
+            "John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
         # TODO: update with short description of the module and a link to online module documentation
         self.parent.helpText = """
 This is an example of scripted loadable module bundled in an extension.
@@ -163,32 +166,46 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # These connections ensure that we update parameter node when scene is closed
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
-        self.ui.t2InputSelector.connect('textActivated(QString)',lambda x : self.on_chage_load_image("t2",x)  )
-        self.ui.structuralInputSelector.connect('textActivated(QString)', lambda x : self.on_chage_load_image("t1",x) )
+
+        self.ui.t2InputSelector.connect('textActivated(QString)', lambda x: self.on_chage_load_image("t2", x))
+        self.ui.structuralInputSelector.connect('textActivated(QString)', lambda x: self.on_chage_load_image("t1", x))
         # Buttons
         self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
-        self.ui.inputPathSelector.connect('currentPathChanged(QString)',self.onInputFolderSelect)
+        self.ui.preprocessingButton.clicked.connect(self.onApplyPreprocessing)
+        self.ui.inputPathSelector.connect('currentPathChanged(QString)', self.onInputFolderSelect)
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
 
-    def on_chage_load_image(self,key, newvalue):
+        # create temp workdir
+        self._create_temp_folder()
+
+    def on_chage_load_image(self, key, newvalue):
         if not hasattr(self, key):
             setattr(self, key, newvalue)
         else:
             print(1)
 
-        print('I am loading ', newvalue, " to " ,key )
+        print('I am loading ', newvalue, " to ", key)
         ### dont reload if image exist in scene
         all_images = slicer.mrmlScene.GetNodesByClass("vtkMRMLScalarVolumeNode")
         all_images_names = [node.GetName() for node in all_images]
         if not newvalue.split(".")[0] in all_images_names:
             loadNiiImage(str(self.processing_folder / newvalue))
-        #end
+        # end
+
     def cleanup(self) -> None:
         """
         Called when the application closes and the module widget is destroyed.
         """
         self.removeObservers()
+        self._remove_temporary_folder()
+
+    def _create_temp_folder(self):
+        self.temp_workdir = tempfile.TemporaryDirectory()
+        print(self.temp_workdir.name)
+
+    def _remove_temporary_folder(self):
+        self.temp_workdir.cleanup()
 
     def enter(self) -> None:
         """
@@ -262,12 +279,24 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.applyButton.toolTip = "Select input and output volume nodes"
             self.ui.applyButton.enabled = False
 
+    def onApplyPreprocessing(self) -> None:
+        print("start on appl")
+        slicer_preprocessing.register_t2_to_t1(
+            script_home=self.resourcePath('Smk_utils')
+            ,t1=str(self.processing_folder / self.t1)
+            ,t2=str(self.processing_folder / self.t2),
+            out_name=str(self.temp_workdir.name +os.sep + "coreg_t2.nii.gz")
+        )
+        print("fin on appl")
+
+
+
+
     def onApplyButton(self) -> None:
         """
         Run processing when user clicks "Apply" button.
         """
         with slicer.util.tryWithErrorDisplay("Failed to compute results.", waitCursor=True):
-
             # Compute output
             self.logic.process(self.ui.inputSelector.currentNode(), self.ui.outputSelector.currentNode(),
                                self.ui.imageThresholdSliderWidget.value, self.ui.invertOutputCheckBox.checked)
@@ -276,17 +305,18 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if self.ui.invertedOutputSelector.currentNode():
                 # If additional output volume is selected then result with inverted threshold is written there
                 self.logic.process(self.ui.inputSelector.currentNode(), self.ui.invertedOutputSelector.currentNode(),
-                                   self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked, showResult=False)
+                                   self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked,
+                                   showResult=False)
 
-    def onInputFolderSelect(self,new_path) -> None:
+    def onInputFolderSelect(self, new_path) -> None:
         """
         run when input folder selected
         """
-        print("new_path" , new_path)
+        print("new_path", new_path)
         with slicer.util.tryWithErrorDisplay("Failed to compute results.", waitCursor=True):
-            self.processing_folder = pathlib.Path(new_path)
+            self.processing_folder = Path(new_path)
             ###load folder]
-            images =get_images_in_folder(new_path)
+            images = get_images_in_folder(new_path)
             self.ui.structuralInputSelector.clear()
             self.ui.structuralInputSelector.addItems(images)
             # for i in images
@@ -297,10 +327,13 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             #### load
             pass
 
+
 def loadNiiImage(file_path):
-        # Load an image and display it in Slicer
+    # Load an image and display it in Slicer
     image_node = slicer.util.loadVolume(file_path)
     slicer.util.setSliceViewerLayers(background=image_node)
+
+
 #
 # load_niftyLogic
 #
@@ -354,12 +387,13 @@ class load_niftyLogic(ScriptedLoadableModuleLogic):
             'ThresholdValue': imageThreshold,
             'ThresholdType': 'Above' if invert else 'Below'
         }
-        cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True, update_display=showResult)
+        cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True,
+                                 update_display=showResult)
         # We don't need the CLI module node anymore, remove it to not clutter the scene with it
         slicer.mrmlScene.RemoveNode(cliNode)
 
         stopTime = time.time()
-        logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
+        logging.info(f'Processing completed in {stopTime - startTime:.2f} seconds')
 
 
 #
