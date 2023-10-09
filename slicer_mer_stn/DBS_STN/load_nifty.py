@@ -1,6 +1,8 @@
 import logging
 import os
 from typing import Annotated, Optional
+
+import qt
 import vtk
 import tempfile
 import slicer
@@ -136,6 +138,8 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)  # needed for parameter node observation
+        self.intensity_normalisation_done = False
+        self.wm_seg_done = False
         self.logic = None
         self._parameterNode = None
         self._parameterNodeGuiTag = None
@@ -172,6 +176,10 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Buttons
         self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
         self.ui.preprocessingButton.clicked.connect(self.onApplyPreprocessing)
+        self.ui.wmSegmentationButton.clicked.connect(self.onApplyWMSeg)
+        self.ui.wmIntensityNormButton.clicked.connect(self.onApplyIntensity)
+        self.ui.twoStepCoregistrationButton.clicked.connect(self.onTwoStepCoregistration)
+
         self.ui.inputPathSelector.connect('currentPathChanged(QString)', self.onInputFolderSelect)
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
@@ -283,14 +291,58 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         print("start on appl")
         slicer_preprocessing.register_t2_to_t1(
             script_home=self.resourcePath('Smk_utils')
-            ,t1=str(self.processing_folder / self.t1)
-            ,t2=str(self.processing_folder / self.t2),
-            out_name=str(self.temp_workdir.name +os.sep + "coreg_t2.nii.gz")
+            , t1=str(self.processing_folder / self.t1)
+            , t2=str(self.processing_folder / self.t2),
+            out_name=str(self.temp_workdir.name + os.sep + "coreg_t2.nii.gz")
         )
+        self.popup_window()
         print("fin on appl")
 
+    def onApplyWMSeg(self) -> None:
+        print("start on onApplyWMSeg")
+        slicer_preprocessing.wm_segmentation(t1=str(self.processing_folder / self.t1),
+                                             out_folder=self.temp_workdir.name)
+        self.wm_seg_done = True
+        print("fin on appl")
 
+    def popup_window(self):
+        message_box = qt.QMessageBox()
 
+        # Set the message box type (information, warning, etc.)
+        message_box.setIcon(qt.QMessageBox.Information)
+
+        # Set the title and message text
+        message_box.setWindowTitle("Process Completed")
+        message_box.setText("The process has finished successfully.")
+
+        # Add an "OK" button to the message box
+        message_box.addButton(qt.QMessageBox.Ok)
+
+        # Show the message box as a modal dialog
+        message_box.exec_()
+
+    def onApplyIntensity(self):
+        print("test onApplyIntensity")
+        slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
+        if self.wm_seg_done:
+            slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
+            self.intensity_normalisation_done = True
+
+            pass
+        self.popup_window()
+
+    def onTwoStepCoregistration(self):
+        print("test onApplyIntensity")
+        mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
+        mni_mask = self.resourcePath('MNI/MNI152_T1_1mm_subbr_mask.nii.gz')
+
+        slicer_preprocessing.two_step_linear_coregistration(mni_image=mni,
+                                                            mni_mask=mni_mask,
+                                                            out_folder=self.temp_workdir.name)
+        if self.wm_seg_done:
+            slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
+            pass
+        self.popup_window()
 
     def onApplyButton(self) -> None:
         """
