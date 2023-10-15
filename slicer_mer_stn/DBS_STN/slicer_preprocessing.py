@@ -4,8 +4,10 @@ from pathlib import Path
 import subprocess
 import shlex
 import nibabel as nib
+import numpy as np
 from intensity_normalization.cli.fcm import fcm_main
 import sys
+
 
 def register_t2_to_t1(script_home, t1, t2, out_name):
     parent = str(Path(out_name).parent)
@@ -24,7 +26,6 @@ def wm_segmentation(t1, out_folder):
     t1: str t1 file
     out_folder: s
     """
-
 
     copy_image = f"cp -f {t1} {str(Path(out_folder) / 't1.nii.gz')}"
     copy_image = shlex.split(copy_image)
@@ -62,8 +63,7 @@ def intensity_normalisation(out_folder):
     t2_file = Path(out_folder) / "coreg_t2.nii.gz"
     pve_seg = Path(out_folder) / "t1_pveseg.nii.gz"
     wm_mask = str(Path(out_folder) / "wm_mask.nii.gz")
-    binarise_threshold(filename=str(pve_seg),threshold=2,save_filename=wm_mask)
-
+    binarise_threshold(filename=str(pve_seg), threshold=2, save_filename=wm_mask)
 
     run_wm_slab_creation = "fcm-normalize {t2_file} " \
                            "-tm {wm_mask} " \
@@ -76,48 +76,27 @@ def intensity_normalisation(out_folder):
     fcm_main()
 
 
-def two_step_linear_coregistration(mni_image,mni_mask, out_folder):
-
-
-
+def elastix_registration(mni_image,
+                         mni_mask,
+                         elastix_parameters,
+                         out_folder):
     struct_image = str(Path(out_folder) / "t1.nii.gz")
 
-
-    flirt_command = "flirt -in {struct_image} -ref {refim} -out {res_im}" \
-                    " -omat {o_mat} -dof 12" \
-        .format(struct_image=struct_image,
-                refim=mni_image, res_im=str(Path(out_folder)  / "t1_brain_to_mni_affine"),
-                o_mat=str(Path(out_folder)  / "affine_t1.mat"))
-
+    flirt_command = f"elastix -f {mni_image} -m {str(struct_image)} -p {elastix_parameters}" \
+                    f" -out {out_folder}"
     flirt_command = shlex.split(flirt_command)
     subprocess.check_output(flirt_command)
-    # 2nd stage
-    flirt_command = "flirt -in {struct_image} -ref {refim} -out {res_im}" \
-                    " -omat {o_mat} -nosearch -refweight {ref_weight}" \
-                    "" \
-        .format(struct_image=str(Path(out_folder)  / "t1_brain_to_mni_affine.nii.gz"),
-                refim=mni_image, res_im=str(Path(out_folder)  / "t1_brain_to_mni_stage2"),
-                o_mat=str(Path(out_folder)  / "affine_t1_stage2.mat"), ref_weight=mni_mask)
-    flirt_command = shlex.split(flirt_command)
-    subprocess.check_output(flirt_command)
-    # Convert matrices
-    c_xfm = "convert_xfm -omat {omat} -concat {first_mat} {second_mat}" \
-        .format(omat=str(Path(out_folder)  / "combined_affine_t1.mat"),
-                first_mat=str(Path(out_folder)  / "affine_t1_stage2.mat")
-                , second_mat=str(Path(out_folder)  / "affine_t1.mat"))
 
-    c_xfm = shlex.split(c_xfm)
-    subprocess.check_output(c_xfm)
-    c_xfm = "convert_xfm -omat {omat} -inverse {first_mat}" \
-        .format(omat=str(Path(out_folder)  / "combined_affine_reverse.mat"),
-                first_mat=str(Path(out_folder)  / "combined_affine_t1.mat"))
-    c_xfm = shlex.split(c_xfm)
-    subprocess.check_output(c_xfm)
-    # apply transform
-    flirt_command = "flirt -in {struct_image} -ref {refim} -out {res_im}" \
-                    " -applyxfm -init {o_mat} -dof 12" \
-        .format(struct_image=str(Path(out_folder)  / "t1_acpc_extracted.nii.gz"),
-                refim=mni_image, res_im=str(Path(out_folder)  / "t1_brain_to_mni_stage2_apply"),
-                o_mat=str(Path(out_folder)  / "combined_affine_t1.mat"))
 
-    pass
+
+def convert_matrix_to_slicer_transformation(matrix: np.ndarray, out_file: str):
+    line = "# Insight Transform File V1.0\n"
+    line += "Transform: AffineTransform_double_3_3\n"
+    line += "Parameters: "
+    line += " ".join([str(x) for x in matrix[:3, :3].flatten().tolist()])
+    line += " " + " ".join([str(x) for x in matrix[:3, 3].tolist()]) + "\n"
+    line += "FixedParameters: 0 0 0"
+
+    o_f = open(out_file, "wt")
+    o_f.write(line)
+    o_f.close()

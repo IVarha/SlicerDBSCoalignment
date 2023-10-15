@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Annotated, Optional
 
+import numpy as np
 import qt
 import vtk
 import tempfile
@@ -12,12 +13,19 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
     WithinRange,
 )
+import fsl.data.image as fim
+import fsl.transform.flirt as fl
 from pathlib import Path
 import slicer_preprocessing
 from utils_file import get_images_in_folder
-
 from slicer import vtkMRMLScalarVolumeNode
 
+
+def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
+    im_src = fim.Image(src_file, loadData=False)
+    im_dest = fim.Image(dest_file, loadData=False)
+    forward_transf_fsl = fl.readFlirt(mat_file)
+    return fl.fromFlirt(forward_transf_fsl, im_src, im_dest, from_, to)
 
 #
 # load_nifty
@@ -332,17 +340,20 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.popup_window()
 
     def onTwoStepCoregistration(self):
-        print("test onApplyIntensity")
+        print("test onTwoStepCoregustration")
         mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
         mni_mask = self.resourcePath('MNI/MNI152_T1_1mm_subbr_mask.nii.gz')
-
-        slicer_preprocessing.two_step_linear_coregistration(mni_image=mni,
-                                                            mni_mask=mni_mask,
+        elastix_affine = self.resourcePath('elastix/affine_mri.txt')
+        slicer_preprocessing.elastix_registration(mni_image=mni,
+                                                  mni_mask=mni_mask,
+                                                  elastix_parameters=elastix_affine,
                                                             out_folder=self.temp_workdir.name)
-        if self.wm_seg_done:
-            slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
-            pass
-        self.popup_window()
+        tfm_file = Path(self.temp_workdir.name) / "TransformParameters.0.tfm"
+        slicer.util.loadTransform(tfm_file)
+        node = slicer.util.getNode("TransformParameters.0")
+        node.SetName("to_mni")
+
+
 
     def onApplyButton(self) -> None:
         """
