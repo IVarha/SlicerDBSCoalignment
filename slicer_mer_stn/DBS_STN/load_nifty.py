@@ -182,7 +182,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.t2InputSelector.connect('textActivated(QString)', lambda x: self.on_chage_load_image("t2", x))
         self.ui.structuralInputSelector.connect('textActivated(QString)', lambda x: self.on_chage_load_image("t1", x))
         # Buttons
-        self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
+        #self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
         self.ui.preprocessingButton.clicked.connect(self.onApplyPreprocessing)
         self.ui.wmSegmentationButton.clicked.connect(self.onApplyWMSeg)
         self.ui.wmIntensityNormButton.clicked.connect(self.onApplyIntensity)
@@ -265,27 +265,27 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.setParameterNode(self.logic.getParameterNode())
 
         # Select default input nodes if nothing is selected yet to save a few clicks for the user
-        if not self._parameterNode.inputVolume:
-            firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
-            if firstVolumeNode:
-                self._parameterNode.inputVolume = firstVolumeNode
+        # if not self._parameterNode.inputVolume:
+        #     firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+        #     if firstVolumeNode:
+        #         self._parameterNode.inputVolume = firstVolumeNode
 
     def setParameterNode(self, inputParameterNode: Optional[load_niftyParameterNode]) -> None:
         """
         Set and observe parameter node.
         Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
         """
-
-        if self._parameterNode:
-            self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-        self._parameterNode = inputParameterNode
-        if self._parameterNode:
-            # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
-            # ui element that needs connection.
-            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
-            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-            self._checkCanApply()
+        pass
+        # if self._parameterNode:
+        #     self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
+        #     self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        # self._parameterNode = inputParameterNode
+        # if self._parameterNode:
+        #     # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
+        #     # ui element that needs connection.
+        #     self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
+        #     self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        #     self._checkCanApply()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
         if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.thresholdedVolume:
