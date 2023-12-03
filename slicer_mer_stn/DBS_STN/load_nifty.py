@@ -19,6 +19,8 @@ from pathlib import Path
 import slicer_preprocessing
 from utils_file import get_images_in_folder
 from slicer import vtkMRMLScalarVolumeNode
+from dnn_segmentation.image_loader import SubcorticalMask
+import sitkUtils
 
 
 def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
@@ -26,6 +28,7 @@ def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
     im_dest = fim.Image(dest_file, loadData=False)
     forward_transf_fsl = fl.readFlirt(mat_file)
     return fl.fromFlirt(forward_transf_fsl, im_src, im_dest, from_, to)
+
 
 #
 # load_nifty
@@ -182,7 +185,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.t2InputSelector.connect('textActivated(QString)', lambda x: self.on_chage_load_image("t2", x))
         self.ui.structuralInputSelector.connect('textActivated(QString)', lambda x: self.on_chage_load_image("t1", x))
         # Buttons
-        #self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
+        # self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
         self.ui.preprocessingButton.clicked.connect(self.onApplyPreprocessing)
         self.ui.wmSegmentationButton.clicked.connect(self.onApplyWMSeg)
         self.ui.wmIntensityNormButton.clicked.connect(self.onApplyIntensity)
@@ -196,18 +199,40 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._create_temp_folder()
 
     def on_chage_load_image(self, key, newvalue):
+        x = None
+        try:
+            x = getattr(self, key)
+            print(1)
+        except:
+            print(1.1)
+            pass
+        if x is not None:
+            if x == newvalue:
+                return
+
         if not hasattr(self, key):
+            #            print(newvalue)
             setattr(self, key, newvalue)
+
         else:
             print(1)
 
         print('I am loading ', newvalue, " to ", key)
         ### dont reload if image exist in scene
-        all_images = slicer.mrmlScene.GetNodesByClass("vtkMRMLScalarVolumeNode")
-        all_images_names = [node.GetName() for node in all_images]
-        if not newvalue.split(".")[0] in all_images_names:
-            loadNiiImage(str(self.processing_folder / newvalue))
-        # end
+        # all_images = slicer.mrmlScene.GetNodesByClass("vtkMRMLScalarVolumeNode")
+
+        try:
+            node = slicer.util.getNode(key)
+            slicer.mrmlScene.RemoveNode(node)
+            # node is found
+        except:  # node not found
+            pass  # todo change this method to get t2
+        node = loadNiiImage(str(self.processing_folder / newvalue))
+        node.SetName(key)
+        # all_images_names = [node.GetName() for node in all_images]
+        # if not newvalue.split(".")[0] in all_images_names:
+        #     loadNiiImage(str(self.processing_folder / newvalue))
+        # # end
 
     def cleanup(self) -> None:
         """
@@ -276,16 +301,6 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
         """
         pass
-        # if self._parameterNode:
-        #     self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-        #     self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-        # self._parameterNode = inputParameterNode
-        # if self._parameterNode:
-        #     # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
-        #     # ui element that needs connection.
-        #     self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
-        #     self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-        #     self._checkCanApply()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
         if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.thresholdedVolume:
@@ -297,12 +312,13 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyPreprocessing(self) -> None:
         print("start on appl")
-        slicer_preprocessing.register_t2_to_t1(
-            script_home=self.resourcePath('Smk_utils')
-            , t1=str(self.processing_folder / self.t1)
-            , t2=str(self.processing_folder / self.t2),
-            out_name=str(self.temp_workdir.name + os.sep + "coreg_t2.nii.gz")
-        )
+
+        slicer_preprocessing.elastix_registration(ref_image=str(self.processing_folder / self.t1),
+                                                  flo_image=str(self.processing_folder / self.t2),
+                                                  elastix_parameters=self.resourcePath('elastix/rigid_mri.txt')
+                                                  , out_folder=self.temp_workdir.name
+                                                  )
+        (Path(self.temp_workdir.name) / "result.0.nii.gz").rename((Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
         self.popup_window()
         print("fin on appl")
 
@@ -331,10 +347,15 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyIntensity(self):
         print("test onApplyIntensity")
-        slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
+        # slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
         if self.wm_seg_done:
             slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
             self.intensity_normalisation_done = True
+            self.t2_node = slicer.util.getNode('t2')
+            slicer.mrmlScene.RemoveNode(self.t2_node)
+            t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t2_normalised.nii.gz"))
+            # t2_node.setName("t2_normalised")
+            self.t2_node = t2_node
 
             pass
         self.popup_window()
@@ -344,16 +365,16 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
         mni_mask = self.resourcePath('MNI/MNI152_T1_1mm_subbr_mask.nii.gz')
         elastix_affine = self.resourcePath('elastix/affine_mri.txt')
-        slicer_preprocessing.elastix_registration(mni_image=mni,
-                                                  mni_mask=mni_mask,
+        struct_image = str(Path(self.temp_workdir.name) / "t1.nii.gz")
+        slicer_preprocessing.elastix_registration(ref_image=mni,
+                                                  flo_image=struct_image,
                                                   elastix_parameters=elastix_affine,
-                                                            out_folder=self.temp_workdir.name)
+                                                  out_folder=self.temp_workdir.name)
         tfm_file = Path(self.temp_workdir.name) / "TransformParameters.0.tfm"
-        slicer.util.loadTransform(tfm_file)
-        node = slicer.util.getNode("TransformParameters.0")
-        node.SetName("to_mni")
-
-
+        transfortm_node = slicer.util.loadTransform(tfm_file)
+        # node = slicer.util.getNode("TransformParameters.0")
+        transfortm_node.SetName("to_mni")
+        # node.SetName("to_mni")
 
     def onApplyButton(self) -> None:
         """
@@ -390,11 +411,19 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             #### load
             pass
 
+    def onSegmentationButtonClicked(self):
+        print("Starting segmentation")
+        #todo add segmentation part here
+        # self.
+
+        pass
+
 
 def loadNiiImage(file_path):
     # Load an image and display it in Slicer
     image_node = slicer.util.loadVolume(file_path)
     slicer.util.setSliceViewerLayers(background=image_node)
+    return image_node
 
 
 #

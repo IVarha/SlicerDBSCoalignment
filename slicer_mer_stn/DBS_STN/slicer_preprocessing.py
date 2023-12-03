@@ -26,6 +26,7 @@ def wm_segmentation(t1, out_folder):
     t1: str t1 file
     out_folder: s
     """
+    print(t1)
 
     copy_image = f"cp -f {t1} {str(Path(out_folder) / 't1.nii.gz')}"
     copy_image = shlex.split(copy_image)
@@ -76,13 +77,13 @@ def intensity_normalisation(out_folder):
     fcm_main()
 
 
-def elastix_registration(mni_image,
-                         mni_mask,
+def elastix_registration(ref_image,
+                         flo_image,
                          elastix_parameters,
                          out_folder):
-    struct_image = str(Path(out_folder) / "t1.nii.gz")
 
-    flirt_command = f"elastix -f {mni_image} -m {str(struct_image)} -p {elastix_parameters}" \
+
+    flirt_command = f"elastix -f {ref_image} -m {str(flo_image)} -p {elastix_parameters}" \
                     f" -out {out_folder}"
     flirt_command = shlex.split(flirt_command)
     subprocess.check_output(flirt_command)
