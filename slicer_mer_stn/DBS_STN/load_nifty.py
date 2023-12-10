@@ -1,12 +1,15 @@
 import logging
 import os
+import pickle
 from typing import Annotated, Optional
 
 import numpy as np
 import qt
+import torch
 import vtk
 import tempfile
 import slicer
+from sklearn.preprocessing import MinMaxScaler
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 from slicer.parameterNodeWrapper import (
@@ -17,12 +20,13 @@ import fsl.data.image as fim
 import fsl.transform.flirt as fl
 from pathlib import Path
 import slicer_preprocessing
+from image_utils import SlicerImage
 from utils_file import get_images_in_folder
 from slicer import vtkMRMLScalarVolumeNode
 from dnn_segmentation.image_loader import SubcorticalMask
 import sitkUtils
-
-
+from dnn_segmentation.histogram_standartisation import HistogramStandartisation
+from dnn_segmentation.nets import CenterDetector
 def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
     im_src = fim.Image(src_file, loadData=False)
     im_dest = fim.Image(dest_file, loadData=False)
@@ -149,6 +153,9 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)  # needed for parameter node observation
+        self.center_detector_scaller = None
+        self.cent_det_hist = None
+        self.det_mask = None
         self.intensity_normalisation_done = False
         self.wm_seg_done = False
         self.logic = None
@@ -198,6 +205,32 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # create temp workdir
         self._create_temp_folder()
 
+        #initialise variables
+        print(self.resourcePath('nets/cent_detect_hist.pkl'))
+        self.cent_det_hist = self._read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
+
+        self.det_mask : SubcorticalMask= self._read_pickle(self.resourcePath('nets/detect_mask.pkl'))[3]
+        print(self.det_mask.get_coords_3d()[self.det_mask.n_x//2,self.det_mask.n_y//2,self.det_mask.n_z//2,:])
+
+        def _compute_min_max_scaler(pt_min, pt_max):
+            a = MinMaxScaler()
+            a.fit([pt_min, pt_max])
+            return a
+
+        self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
+        net = CenterDetector().to('cpu')
+        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'),map_location=torch.device('cpu'))
+        net.load_state_dict(cd_state_dict)
+        self.center_detector = net
+
+
+
+    def _read_pickle(self, filename):
+        f = open(filename,'rb')
+        res = pickle.load(f)
+        f.close()
+        return res
+    
     def on_chage_load_image(self, key, newvalue):
         x = None
         try:
@@ -318,7 +351,9 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                                   elastix_parameters=self.resourcePath('elastix/rigid_mri.txt')
                                                   , out_folder=self.temp_workdir.name
                                                   )
-        (Path(self.temp_workdir.name) / "result.0.nii.gz").rename((Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
+        ((Path(self.temp_workdir.name) / "result.0.nii.gz")
+            .rename((Path(self.temp_workdir.name) / "coreg_t2.nii.gz")))
+
         self.popup_window()
         print("fin on appl")
 
@@ -374,6 +409,11 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         transfortm_node = slicer.util.loadTransform(tfm_file)
         # node = slicer.util.getNode("TransformParameters.0")
         transfortm_node.SetName("to_mni")
+        t2_image =slicer.util.getNode("t2_normalised")
+        t2_image.SetAndObserveTransformNodeID(transfortm_node.GetID())
+        t2_image.HardenTransform()
+        self.onSegmentationButtonClicked()
+
         # node.SetName("to_mni")
 
     def onApplyButton(self) -> None:
@@ -416,6 +456,41 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         #todo add segmentation part here
         # self.
 
+        t2 = slicer.util.getNode("t2_normalised")
+        image_processor = SlicerImage(t2.GetImageData())
+
+        transform_ras_to_ijk = vtk.vtkMatrix4x4()
+        t2.GetIJKToRASMatrix(transform_ras_to_ijk)
+
+        transform_ras_to_ijk.Invert()
+        a = image_processor.compute_image_at_pts(self.det_mask, transform_ras_to_ijk)
+        a = list(a)
+        a[0] = self.cent_det_hist.apply_normalization(a[0])
+        a[1] = self.cent_det_hist.apply_normalization(a[1])
+
+
+        try:
+            res_a0 = np.expand_dims(a[0], axis=0)
+            res_a0 = self.center_detector(torch.from_numpy(np.expand_dims(res_a0, axis=0)))
+            res_a1 = np.expand_dims(a[1], axis=0)
+            res_a1 = self.center_detector(torch.from_numpy(np.expand_dims(res_a1, axis=0)))
+
+            res_a0 = self.center_detector_scaller.inverse_transform(res_a0.detach().numpy())[0]
+            res_a1 = self.center_detector_scaller.inverse_transform(res_a1.detach().numpy())[0]
+
+            self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
+            self.center_orig.AddControlPointWorld(-1 * res_a0[0],res_a0[1],res_a0[2])
+            self.center_orig.AddControlPointWorld(res_a1[0], res_a1[1], res_a1[2])
+            print( res_a0 , res_a1 )
+
+
+        except Exception as e:
+            raise e
+            #print(5)
+        self.center_detector_scaller()
+        print(a[0][self.det_mask.n_x//2,self.det_mask.n_y//2,self.det_mask.n_z//2],
+              a[1][self.det_mask.n_x//2,self.det_mask.n_y//2,self.det_mask.n_z//2])
+        #print(a)
         pass
 
 
