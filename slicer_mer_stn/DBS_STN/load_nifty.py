@@ -554,18 +554,31 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.center_orig.AddControlPointWorld(pts_mirr[0], pts_mirr[1], pts_mirr[2])
             self.center_orig.AddControlPointWorld(pts_orig[0], pts_orig[1], pts_orig[2])
 
-            self.mesh1 = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
-            self.mesh1.SetAndObservePolyData(mesh_orig)
-            self.mesh1.SetDisplayVisibility(True)
-            self.mesh2 = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
-            self.mesh2.SetAndObservePolyData(mesh_mirr)
-            self.mesh2.SetDisplayVisibility(True)
+
+            self.mesh1 = display_mesh(mesh_orig,"Mesh left")
+            self.mesh2 = display_mesh(mesh_mirr, "Mesh right")
+
 
 
         except Exception as e:
             raise e
             # print(5)
 
+def display_mesh(mesh, node_name):
+    modelNode  = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
+    modelNode .SetAndObservePolyData(mesh)
+    modelNode .SetDisplayVisibility(True)
+    modelNode .SetName(node_name)
+    displayNode = modelNode.GetDisplayNode()
+    if displayNode is None:
+        displayNode = slicer.mrmlScene.CreateNodeByClass("vtkMRMLModelDisplayNode")
+        slicer.mrmlScene.AddNode(displayNode)
+        modelNode.SetAndObserveDisplayNodeID(displayNode.GetID())
+    displayNode.SetScalarVisibility(1)
+    displayNode.SetVisibility3D(1)
+    displayNode.SetVisibility2D(1)
+    displayNode.Modified()
+    return modelNode
 
 def loadNiiImage(file_path):
     # Load an image and display it in Slicer
