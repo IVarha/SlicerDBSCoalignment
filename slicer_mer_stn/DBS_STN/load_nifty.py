@@ -19,14 +19,16 @@ from slicer.parameterNodeWrapper import (
 import fsl.data.image as fim
 import fsl.transform.flirt as fl
 from pathlib import Path
-import slicer_preprocessing
-from image_utils import SlicerImage
-from utils_file import get_images_in_folder
+from Lib import slicer_preprocessing
+from Lib.image_utils import SlicerImage
+from Lib.utils_file import get_images_in_folder
 from slicer import vtkMRMLScalarVolumeNode
-from dnn_segmentation.image_loader import SubcorticalMask
+from dbs_image_utils.mask import SubcorticalMask
 import sitkUtils
-from dnn_segmentation.histogram_standartisation import HistogramStandartisation
-from dnn_segmentation.nets import CenterDetector
+from dbs_image_utils.histogram_standartisation import HistogramStandartisation
+from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
+
+
 def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
     im_src = fim.Image(src_file, loadData=False)
     im_dest = fim.Image(dest_file, loadData=False)
@@ -142,6 +144,16 @@ class load_niftyParameterNode:
 # load_niftyWidget
 #
 
+def change_mesh(mesh, ch_pts):
+    polys = mesh.GetPolys()
+    pts = mesh.GetPoints()
+    for i in range(pts.GetNumberOfPoints()):
+        pts.SetPoint(i, ch_pts[i, 0], ch_pts[i, 1], ch_pts[i, 2])
+
+    mesh.SetPoints(pts)
+    return mesh
+
+
 class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -205,32 +217,42 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # create temp workdir
         self._create_temp_folder()
 
-        #initialise variables
+        # initialise variables
         print(self.resourcePath('nets/cent_detect_hist.pkl'))
         self.cent_det_hist = self._read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
 
-        self.det_mask : SubcorticalMask= self._read_pickle(self.resourcePath('nets/detect_mask.pkl'))[3]
-        print(self.det_mask.get_coords_3d()[self.det_mask.n_x//2,self.det_mask.n_y//2,self.det_mask.n_z//2,:])
+        self.det_mask: SubcorticalMask = self._read_pickle(self.resourcePath('nets/detect_mask.pkl'))
+        print(self.det_mask.get_coords_3d()[self.det_mask.n_x // 2, self.det_mask.n_y // 2, self.det_mask.n_z // 2, :])
 
         def _compute_min_max_scaler(pt_min, pt_max):
             a = MinMaxScaler()
             a.fit([pt_min, pt_max])
             return a
 
+        # load center detector
         self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
         net = CenterDetector().to('cpu')
-        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'),map_location=torch.device('cpu'))
+        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('cpu'))
         net.load_state_dict(cd_state_dict)
         self.center_detector = net
 
+        self.shape_pca_res = self._read_pickle(self.resourcePath('nets/shape_pcas.pkl'))
 
+        self.shape_label_mask: SubcorticalMask = self._read_pickle(self.resourcePath('nets/stn_shape_mask.pkl'))
+
+        # load segmentation model
+        self.shape_histogram = self._read_pickle(self.resourcePath('nets/shape_hist.pkl'))
+        net = CenterAndPCANet(self.shape_pca_res[1])
+        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
+        net.load_state_dict(cd_state_dict)
+        self.shape_predictor = net
 
     def _read_pickle(self, filename):
-        f = open(filename,'rb')
+        f = open(filename, 'rb')
         res = pickle.load(f)
         f.close()
         return res
-    
+
     def on_chage_load_image(self, key, newvalue):
         x = None
         try:
@@ -352,7 +374,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                                   , out_folder=self.temp_workdir.name
                                                   )
         ((Path(self.temp_workdir.name) / "result.0.nii.gz")
-            .rename((Path(self.temp_workdir.name) / "coreg_t2.nii.gz")))
+         .rename((Path(self.temp_workdir.name) / "coreg_t2.nii.gz")))
 
         self.popup_window()
         print("fin on appl")
@@ -409,7 +431,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         transfortm_node = slicer.util.loadTransform(tfm_file)
         # node = slicer.util.getNode("TransformParameters.0")
         transfortm_node.SetName("to_mni")
-        t2_image =slicer.util.getNode("t2_normalised")
+        t2_image = slicer.util.getNode("t2_normalised")
         t2_image.SetAndObserveTransformNodeID(transfortm_node.GetID())
         t2_image.HardenTransform()
         self.onSegmentationButtonClicked()
@@ -451,10 +473,49 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             #### load
             pass
 
+    def segment_side(self, center_pred_point,image_coords, mirror=False):
+        # load mesh
+        mesh = vtk.vtkOBJReader()
+        mesh.SetFileName(self.resourcePath('nets/3.obj'))
+        mesh.Update()
+        mesh = mesh.GetOutput()
+
+        mm_offset = 2
+        t2 = slicer.util.getNode("t2_normalised")
+        image_processor = SlicerImage(t2.GetImageData())
+
+        transform_ras_to_ijk = vtk.vtkMatrix4x4()
+        t2.GetIJKToRASMatrix(transform_ras_to_ijk)
+        transform_ras_to_ijk.Invert()
+
+        shape_im = image_processor.compute_image_at_pts(points=image_coords,
+                                                        transform_ras_to_ijk=transform_ras_to_ijk)
+        shape_im = np.reshape(shape_im, (self.shape_label_mask.n_x,
+                                         self.shape_label_mask.n_y, self.shape_label_mask.n_z))
+        shape_im = self.shape_histogram.apply_normalization(shape_im)
+        shape_im = torch.from_numpy(np.expand_dims(np.expand_dims(shape_im, axis=0), axis=0)).type(torch.float32)
+
+        print("segm start")
+        out_pcas = self.shape_predictor(shape_im, False)
+        print("segm finished")
+        off_cent = (out_pcas[:, -3:] * 2 * mm_offset) - mm_offset  # reshape center offset
+        # compute resulting center
+        result_center = center_pred_point + off_cent.detach().numpy()
+        pcas = out_pcas[:, :-3]
+        shape = self.shape_pca_res[0].inverse_transform(pcas.detach().numpy())[0]
+        shape = np.reshape(shape, (int(shape.shape[0] / 3), 3)) + result_center
+        print(shape.shape)
+        if mirror:
+            shape = shape * [-1, 1, 1]
+            result_center = result_center * [-1, 1, 1]
+
+        return change_mesh(mesh, shape), result_center
+
+        # shape = np.reshape(shape, (-1, 1))
+
     def onSegmentationButtonClicked(self):
+        mm_offset = 2
         print("Starting segmentation")
-        #todo add segmentation part here
-        # self.
 
         t2 = slicer.util.getNode("t2_normalised")
         image_processor = SlicerImage(t2.GetImageData())
@@ -463,11 +524,10 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         t2.GetIJKToRASMatrix(transform_ras_to_ijk)
 
         transform_ras_to_ijk.Invert()
-        a = image_processor.compute_image_at_pts(self.det_mask, transform_ras_to_ijk)
+        a = image_processor.compute_image_at_mask(self.det_mask, transform_ras_to_ijk)
         a = list(a)
         a[0] = self.cent_det_hist.apply_normalization(a[0])
         a[1] = self.cent_det_hist.apply_normalization(a[1])
-
 
         try:
             res_a0 = np.expand_dims(a[0], axis=0)
@@ -477,21 +537,34 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             res_a0 = self.center_detector_scaller.inverse_transform(res_a0.detach().numpy())[0]
             res_a1 = self.center_detector_scaller.inverse_transform(res_a1.detach().numpy())[0]
-
             self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
-            self.center_orig.AddControlPointWorld(-1 * res_a0[0],res_a0[1],res_a0[2])
+            self.center_orig.AddControlPointWorld(-1 * res_a0[0], res_a0[1], res_a0[2])
             self.center_orig.AddControlPointWorld(res_a1[0], res_a1[1], res_a1[2])
-            print( res_a0 , res_a1 )
+            # compute segmentation
+            image_coords_mirr = self.shape_label_mask.get_coords_list() + res_a0
+            image_coords_orig = self.shape_label_mask.get_coords_list() + res_a1
+            image_coords_mirr = image_coords_mirr * np.array([-1, 1, 1])
+
+            mesh_orig, pts_orig = self.segment_side(res_a1,image_coords_orig)
+            mesh_mirr, pts_mirr = self.segment_side(res_a0, image_coords_mirr,True)
+            print(pts_orig,pts_mirr)
+            pts_mirr = pts_mirr[0]
+            pts_orig = pts_orig[0]
+            self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
+            self.center_orig.AddControlPointWorld(pts_mirr[0], pts_mirr[1], pts_mirr[2])
+            self.center_orig.AddControlPointWorld(pts_orig[0], pts_orig[1], pts_orig[2])
+
+            self.mesh1 = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
+            self.mesh1.SetAndObservePolyData(mesh_orig)
+            self.mesh1.SetDisplayVisibility(True)
+            self.mesh2 = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
+            self.mesh2.SetAndObservePolyData(mesh_mirr)
+            self.mesh2.SetDisplayVisibility(True)
 
 
         except Exception as e:
             raise e
-            #print(5)
-        self.center_detector_scaller()
-        print(a[0][self.det_mask.n_x//2,self.det_mask.n_y//2,self.det_mask.n_z//2],
-              a[1][self.det_mask.n_x//2,self.det_mask.n_y//2,self.det_mask.n_z//2])
-        #print(a)
-        pass
+            # print(5)
 
 
 def loadNiiImage(file_path):
