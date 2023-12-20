@@ -1,8 +1,10 @@
 import logging
 import os
 import pickle
+import shutil
+import subprocess
 from typing import Annotated, Optional
-
+import sys
 import numpy as np
 import qt
 import torch
@@ -16,6 +18,8 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
     WithinRange,
 )
+import nibabel as nib
+from brainextractor import BrainExtractor
 import fsl.data.image as fim
 import fsl.transform.flirt as fl
 from pathlib import Path
@@ -165,6 +169,10 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)  # needed for parameter node observation
+        self.mesh1 = None
+        self.center_orig = None
+        self.mesh2 = None
+        self.shape_predictor = None
         self.center_detector_scaller = None
         self.cent_det_hist = None
         self.det_mask = None
@@ -206,10 +214,11 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Buttons
         # self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
         self.ui.preprocessingButton.clicked.connect(self.onApplyPreprocessing)
+        self.ui.betButton.clicked.connect(self.brain_extraction)
         self.ui.wmSegmentationButton.clicked.connect(self.onApplyWMSeg)
         self.ui.wmIntensityNormButton.clicked.connect(self.onApplyIntensity)
         self.ui.twoStepCoregistrationButton.clicked.connect(self.onTwoStepCoregistration)
-
+        self.ui.segmentationButton.clicked.connect(self.onSegmentationButtonClicked)
         self.ui.inputPathSelector.connect('currentPathChanged(QString)', self.onInputFolderSelect)
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
@@ -268,26 +277,25 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not hasattr(self, key):
             #            print(newvalue)
             setattr(self, key, newvalue)
-
         else:
             print(1)
 
         print('I am loading ', newvalue, " to ", key)
-        ### dont reload if image exist in scene
-        # all_images = slicer.mrmlScene.GetNodesByClass("vtkMRMLScalarVolumeNode")
+        print(Path(str(self.temp_workdir.name)) / (key + ".nii.gz"))
+        shutil.copy(
+            Path(str(self.processing_folder / newvalue)),
+            Path(str(self.temp_workdir.name)) / (key + ".nii.gz")
+        )
 
         try:
             node = slicer.util.getNode(key)
             slicer.mrmlScene.RemoveNode(node)
+
             # node is found
         except:  # node not found
             pass  # todo change this method to get t2
         node = loadNiiImage(str(self.processing_folder / newvalue))
         node.SetName(key)
-        # all_images_names = [node.GetName() for node in all_images]
-        # if not newvalue.split(".")[0] in all_images_names:
-        #     loadNiiImage(str(self.processing_folder / newvalue))
-        # # end
 
     def cleanup(self) -> None:
         """
@@ -381,7 +389,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyWMSeg(self) -> None:
         print("start on onApplyWMSeg")
-        slicer_preprocessing.wm_segmentation(t1=str(self.processing_folder / self.t1),
+        slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
                                              out_folder=self.temp_workdir.name)
         self.wm_seg_done = True
         print("fin on appl")
@@ -429,14 +437,12 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                                   out_folder=self.temp_workdir.name)
         tfm_file = Path(self.temp_workdir.name) / "TransformParameters.0.tfm"
         transfortm_node = slicer.util.loadTransform(tfm_file)
-        # node = slicer.util.getNode("TransformParameters.0")
         transfortm_node.SetName("to_mni")
         t2_image = slicer.util.getNode("t2_normalised")
         t2_image.SetAndObserveTransformNodeID(transfortm_node.GetID())
         t2_image.HardenTransform()
-        self.onSegmentationButtonClicked()
 
-        # node.SetName("to_mni")
+
 
     def onApplyButton(self) -> None:
         """
@@ -473,7 +479,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             #### load
             pass
 
-    def segment_side(self, center_pred_point,image_coords, mirror=False):
+    def segment_side(self, center_pred_point, image_coords, mirror=False):
         # load mesh
         mesh = vtk.vtkOBJReader()
         mesh.SetFileName(self.resourcePath('nets/3.obj'))
@@ -511,6 +517,25 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         return change_mesh(mesh, shape), result_center
 
+    def brain_extraction(self):
+
+        image_t1 = Path(self.temp_workdir.name) / "t1.nii.gz"
+
+        print("FINISHED EXTRACTOR")
+        mask_filename = str(Path(self.temp_workdir.name) / "t1_mask.nii.gz")
+        cmd = sys.executable + " "
+        cmd += self.resourcePath("py/bet.py") + " "
+        cmd += str(image_t1) + " " + mask_filename
+        subprocess.call(cmd, shell=True)
+
+        self.t1_node = slicer.util.getNode('t1')
+        slicer.mrmlScene.RemoveNode(self.t1_node)
+        t1_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t1.nii.gz"))
+        self.t1_node = t1_node
+        # t2_node.setName("t2_normalised")
+
+        pass
+
         # shape = np.reshape(shape, (-1, 1))
 
     def onSegmentationButtonClicked(self):
@@ -545,17 +570,16 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             image_coords_orig = self.shape_label_mask.get_coords_list() + res_a1
             image_coords_mirr = image_coords_mirr * np.array([-1, 1, 1])
 
-            mesh_orig, pts_orig = self.segment_side(res_a1,image_coords_orig)
-            mesh_mirr, pts_mirr = self.segment_side(res_a0, image_coords_mirr,True)
-            print(pts_orig,pts_mirr)
+            mesh_orig, pts_orig = self.segment_side(res_a1, image_coords_orig)
+            mesh_mirr, pts_mirr = self.segment_side(res_a0, image_coords_mirr, True)
+            print(pts_orig, pts_mirr)
             pts_mirr = pts_mirr[0]
             pts_orig = pts_orig[0]
             self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
             self.center_orig.AddControlPointWorld(pts_mirr[0], pts_mirr[1], pts_mirr[2])
             self.center_orig.AddControlPointWorld(pts_orig[0], pts_orig[1], pts_orig[2])
 
-
-            self.mesh1 = display_mesh(mesh_orig,"Mesh left")
+            self.mesh1 = display_mesh(mesh_orig, "Mesh left")
             self.mesh2 = display_mesh(mesh_mirr, "Mesh right")
 
 
@@ -564,11 +588,12 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             raise e
             # print(5)
 
+
 def display_mesh(mesh, node_name):
-    modelNode  = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
-    modelNode .SetAndObservePolyData(mesh)
-    modelNode .SetDisplayVisibility(True)
-    modelNode .SetName(node_name)
+    modelNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
+    modelNode.SetAndObservePolyData(mesh)
+    modelNode.SetDisplayVisibility(True)
+    modelNode.SetName(node_name)
     displayNode = modelNode.GetDisplayNode()
     if displayNode is None:
         displayNode = slicer.mrmlScene.CreateNodeByClass("vtkMRMLModelDisplayNode")
@@ -579,6 +604,7 @@ def display_mesh(mesh, node_name):
     displayNode.SetVisibility2D(1)
     displayNode.Modified()
     return modelNode
+
 
 def loadNiiImage(file_path):
     # Load an image and display it in Slicer
