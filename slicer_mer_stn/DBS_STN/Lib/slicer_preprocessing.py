@@ -35,7 +35,6 @@ def wm_segmentation(t1, out_folder):
     fast_command = f"fast -R 0.0 -H 0.0 -t 1 {str(Path(out_folder) / 't1.nii.gz')}"
     fast_command = shlex.split(fast_command)
     subprocess.check_output(fast_command)
-
     print(fast_command)
 
 
@@ -59,6 +58,7 @@ def binarise_threshold(filename, threshold, save_filename):
 def intensity_normalisation(out_folder):
     """
     Script for intensity normalisation
+    works with out_folder/coreg_t2.nii.gz
     """
     file_name = "t2_normalised.nii.gz"
     t2_file = Path(out_folder) / "coreg_t2.nii.gz"

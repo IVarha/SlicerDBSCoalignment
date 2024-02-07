@@ -222,7 +222,35 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0" colspan="2">
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_2">
+        <property name="text">
+         <string>Left MER signal</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+             <widget class="ctkPathLineEdit" name="LeftMERFileSelector">
+        <property name="filters">
+         <set>ctkPathLineEdit::Files</set>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_2">
+        <property name="text">
+         <string>Right MER signal</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="ctkPathLineEdit" name="RightMERFileSelector">
+        <property name="filters">
+         <set>ctkPathLineEdit::Files</set>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0" colspan="2">
        <widget class="QPushButton" name="merButton">
         <property name="text">
          <string>Run MER</string>
@@ -513,6 +541,38 @@
    <sender>load_nifty</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>rightMarkupSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>161</x>
+     <y>8</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>173</x>
+     <y>176</y>
+    </hint>
+   </hints>
+  </connection>
+    <connection>
+   <sender>load_nifty</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>leftMERFileSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>161</x>
+     <y>8</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>173</x>
+     <y>176</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>load_nifty</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>rightMERFileSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
    <hints>
     <hint type="sourcelabel">

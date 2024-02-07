@@ -7,6 +7,8 @@ from typing import Annotated, Optional
 import sys
 import numpy as np
 import qt
+from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, ElectrodeArray
+from Lib.visualisiation import LeadORLogic
 import torch
 import vtk
 import tempfile
@@ -18,6 +20,7 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
     WithinRange,
 )
+from mer_lib.data import MER_data
 import nibabel as nib
 from brainextractor import BrainExtractor
 import fsl.data.image as fim
@@ -30,8 +33,24 @@ from slicer import vtkMRMLScalarVolumeNode
 from dbs_image_utils.mask import SubcorticalMask
 import sitkUtils
 from dbs_image_utils.histogram_standartisation import HistogramStandartisation
-from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
+from dbs_image_utils.nets import CenterDetector, CenterAndPCANet,TransformerShiftPredictor
+import mer_lib.processor as proc
+import mer_lib.artefact_detection as ad
+import mer_lib.feature_extraction as fe
+import mer_lib.data as mer_dat
 
+def nrms_normalisation( data: MER_data):
+    """
+    across all trajectories together:
+        NRMS = 1 + (NRMS1-1) / (p95(NRMS1)-1)
+    """
+
+    extracted_features = data.extracted_features
+    percentile_95 = np.percentile(extracted_features, 95)
+    data.extracted_features = 1 + (extracted_features - 1) /  ( percentile_95 -1)
+
+
+    return data
 
 def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
     im_src = fim.Image(src_file, loadData=False)
@@ -39,7 +58,44 @@ def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
     forward_transf_fsl = fl.readFlirt(mat_file)
     return fl.fromFlirt(forward_transf_fsl, im_src, im_dest, from_, to)
 
+def get_control_points(markups_node):
+    points = []
+    for i in range(markups_node.GetNumberOfControlPoints()):
+        points.append(markups_node.GetNthControlPointPositionWorld(i))
+    return points
 
+
+def get_transform_matrix(transform_node):
+    matrix = vtk.vtkMatrix4x4()
+    transform_node.GetMatrixTransformToParent(matrix)
+    return matrix
+
+
+def convert_to_numpy_array(matrix):
+    numpy_array = np.zeros((4, 4))
+    for i in range(4):
+        for j in range(4):
+            numpy_array[i, j] = matrix.GetElement(i, j)
+    return numpy_array
+
+
+def apply_transformation(entry_target, transformation_matrix):
+    return cross_generation_mni(ent_tg_native=entry_target, to_mni=transformation_matrix)
+
+
+def read_mer_data(file_path,pattern):
+    return MER_data.read_ontario_data(str(Path(file_path).parent), pattern)
+
+
+def process_mer_data(mer_data):
+    runner = proc.Processor()
+    runner.set_processes([ad.covariance_method, fe.nrms_calculation, nrms_normalisation])
+    mer_data = runner.run(mer_data)
+    return mer_data
+
+
+def extract_electrode_records(entry_target, mer_data, transformation_matrix):
+        return ElectrodeRecord.extract_electrode_records_from_array(entry_target, mer_data, transformation=transformation_matrix)
 #
 # load_nifty
 #
@@ -159,6 +215,54 @@ def change_mesh(mesh, ch_pts):
 
 
 class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+    """Widget class for loading and processing NIFTY files.
+
+    This class inherits from ScriptedLoadableModuleWidget and VTKObservationMixin.
+    It provides a graphical user interface for loading and processing NIFTY files.
+
+    Attributes:
+        mesh1 (None): Placeholder for mesh1.
+        center_orig (None): Placeholder for center_orig.
+        mesh2 (None): Placeholder for mesh2.
+        shape_predictor (None): Placeholder for shape_predictor.
+        center_detector_scaller (None): Placeholder for center_detector_scaller.
+        cent_det_hist (None): Placeholder for cent_det_hist.
+        det_mask (None): Placeholder for det_mask.
+        intensity_normalisation_done (bool): Flag indicating if intensity normalization is done.
+        wm_seg_done (bool): Flag indicating if white matter segmentation is done.
+        logic (None): Placeholder for logic class.
+        _parameterNode (None): Placeholder for parameter node.
+        _parameterNodeGuiTag (None): Placeholder for parameter node GUI tag.
+        temp_workdir (TemporaryDirectory): Temporary working directory.
+        shape_pca_res (None): Placeholder for shape_pca_res.
+        shape_label_mask (None): Placeholder for shape_label_mask.
+        shape_histogram (None): Placeholder for shape_histogram.
+        center_detector (None): Placeholder for center_detector.
+    """
+
+    def __init__(self, parent=None) -> None:
+        """
+        Called when the user opens the module the first time and the widget is initialized.
+        """
+        ScriptedLoadableModuleWidget.__init__(self, parent)
+        VTKObservationMixin.__init__(self)  # needed for parameter node observation
+        self.mesh1 = None
+        self.center_orig = None
+        self.mesh2 = None
+        self.shape_predictor = None
+        self.center_detector_scaller = None
+        self.cent_det_hist = None
+        self.det_mask = None
+        self.intensity_normalisation_done = False
+        self.wm_seg_done = False
+        self.logic = None
+        self._parameterNode = None
+        self._parameterNodeGuiTag = None
+
+    # Rest of the code...
+
+
+class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
@@ -169,6 +273,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)  # needed for parameter node observation
+        self.processing_folder = None
         self.mesh1 = None
         self.center_orig = None
         self.mesh2 = None
@@ -220,12 +325,13 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.twoStepCoregistrationButton.clicked.connect(self.onTwoStepCoregistration)
         self.ui.segmentationButton.clicked.connect(self.onSegmentationButtonClicked)
         self.ui.inputPathSelector.connect('currentPathChanged(QString)', self.onInputFolderSelect)
+        self.ui.merButton.clicked.connect(self.onMerRunButtonClicked)
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
 
         # create temp workdir
         self._create_temp_folder()
-
+        # self.lead_or_bind()
         # initialise variables
         print(self.resourcePath('nets/cent_detect_hist.pkl'))
         self.cent_det_hist = self._read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
@@ -255,6 +361,12 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
         net.load_state_dict(cd_state_dict)
         self.shape_predictor = net
+
+        self.net_shift = TransformerShiftPredictor(4, 16, 1, 1, 10)
+        cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
+        self.net_shift.load_state_dict(cd_state_dict)
+
+        self.mer_transforms = self._read_pickle(self.resourcePath('nets/mer_transforms.pkl'))
 
     def _read_pickle(self, filename):
         f = open(filename, 'rb')
@@ -438,11 +550,10 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         tfm_file = Path(self.temp_workdir.name) / "TransformParameters.0.tfm"
         transfortm_node = slicer.util.loadTransform(tfm_file)
         transfortm_node.SetName("to_mni")
+        self.transform_node = transfortm_node
         t2_image = slicer.util.getNode("t2_normalised")
         t2_image.SetAndObserveTransformNodeID(transfortm_node.GetID())
         t2_image.HardenTransform()
-
-
 
     def onApplyButton(self) -> None:
         """
@@ -509,13 +620,16 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         result_center = center_pred_point + off_cent.detach().numpy()
         pcas = out_pcas[:, :-3]
         shape = self.shape_pca_res[0].inverse_transform(pcas.detach().numpy())[0]
+
         shape = np.reshape(shape, (int(shape.shape[0] / 3), 3)) + result_center
+        res_pts = np.reshape(shape, (-1, 1))
         print(shape.shape)
+
         if mirror:
             shape = shape * [-1, 1, 1]
             result_center = result_center * [-1, 1, 1]
 
-        return change_mesh(mesh, shape), result_center
+        return change_mesh(mesh, shape), result_center, res_pts
 
     def brain_extraction(self):
 
@@ -570,14 +684,15 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             image_coords_orig = self.shape_label_mask.get_coords_list() + res_a1
             image_coords_mirr = image_coords_mirr * np.array([-1, 1, 1])
 
-            mesh_orig, pts_orig = self.segment_side(res_a1, image_coords_orig)
-            mesh_mirr, pts_mirr = self.segment_side(res_a0, image_coords_mirr, True)
-            print(pts_orig, pts_mirr)
-            pts_mirr = pts_mirr[0]
-            pts_orig = pts_orig[0]
+            mesh_orig, cent_orig, self.pts_left= self.segment_side(res_a1, image_coords_orig)
+            mesh_mirr, cent_mirr,self.pts_right = self.segment_side(res_a0, image_coords_mirr, True)
+
+            print(cent_orig, cent_mirr)
+            cent_mirr = cent_mirr[0]
+            cent_orig = cent_orig[0]
             self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
-            self.center_orig.AddControlPointWorld(pts_mirr[0], pts_mirr[1], pts_mirr[2])
-            self.center_orig.AddControlPointWorld(pts_orig[0], pts_orig[1], pts_orig[2])
+            self.center_orig.AddControlPointWorld(cent_mirr[0], cent_mirr[1], cent_mirr[2])
+            self.center_orig.AddControlPointWorld(cent_orig[0], cent_orig[1], cent_orig[2])
 
             self.mesh1 = display_mesh(mesh_orig, "Mesh left")
             self.mesh2 = display_mesh(mesh_mirr, "Mesh right")
@@ -588,12 +703,114 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             raise e
             # print(5)
 
+    def onMerRunButtonClicked(self):
+        """
+        Function triggered when the "MER Run" button is clicked.
+        Applies a transformation to the right and left markups nodes and prints the current paths of the MER files.
+        """
+        right_markups = slicer.mrmlScene.GetNodeByID(self.ui.rightMarkupSelector.currentNodeID)
+        left_markups = slicer.mrmlScene.GetNodeByID(self.ui.leftMarkupSelector.currentNodeID)
+
+        points_right = get_control_points(right_markups)
+        points_left = get_control_points(left_markups)
+
+        print(points_right)  # Print the positions of the control points for the right markups node
+        print(points_left)  # Print the positions of the control points for the left markups node
+
+        matrix = get_transform_matrix(transform_node=self.transform_node)
+        numpy_array = convert_to_numpy_array(matrix)
+
+        et_right = EntryTarget(Point.from_array(points_right[0]), Point.from_array(points_right[1]))
+        et_left = EntryTarget(Point.from_array(points_left[0]), Point.from_array(points_left[1]))
+
+        ea_left = apply_transformation(et_left, numpy_array)
+        ea_right = apply_transformation(et_right, numpy_array)
+
+        print(ea_right)  # Print the entry and target points for the right MER
+
+        self.mer_left_path = self.ui.LeftMERFileSelector.currentPath
+        self.mer_right_path = self.ui.RightMERFileSelector.currentPath
+
+        self.mer_left = read_mer_data(self.mer_left_path,"*run-02*")
+        self.mer_right = read_mer_data(self.mer_right_path,"*run-01*")
+
+        self.mer_left = process_mer_data(self.mer_left)
+        self.mer_right = process_mer_data(self.mer_right)
+
+        self.right_e_rec = extract_electrode_records(ea_right, self.mer_right, numpy_array)
+        self.left_e_rec = extract_electrode_records(ea_left, self.mer_left, numpy_array)
+
+        logic = LeadORLogic()
+        i = 0
+        for el_name, records in self.right_e_rec.items():
+            print(records)
+            logic.setUpTrajectory(i, getattr(ea_right, el_name), records, True, "right_" + el_name, 1, 1, 1)
+
+        for el_name, records in self.left_e_rec.items():
+            print(records)
+            logic.setUpTrajectory(i, getattr(ea_left, el_name), records, True, "left_" + el_name, 1, 1, 1)
+
+
+        # mirror right pts
+        records_right = {}
+        for key, val in self.right_e_rec.items():
+            records_right[key] = []
+            for rec in val:
+                records_right[key].append(ElectrodeRecord(rec.location * [-1,1,1],rec.record,0))
+
+
+
+        compute_transformation_from_signal(records_right, self.pts_right, self.mer_transforms['min_max_p'],
+                                           self.mer_transforms['pipe'], self.net_shift, "right_transf", True)
+        compute_transformation_from_signal(self.left_e_rec, self.pts_left, self.mer_transforms['min_max_p'],
+                                             self.mer_transforms['pipe'], self.net_shift, "left_transf", False)
+
+def compute_transformation_from_signal( records,
+                                        mesh_pts,
+                                        min_max_pts,
+                                        transformer,model, name,mirror=False):
+    """
+
+    """
+    transl_scaller = MinMaxScaler().fit([[-10, -10, -10], [10, 10, 10]])  # config tesy
+    print(mesh_pts)
+    pcas = transformer.transform([mesh_pts])
+    print(mesh_pts)
+    flat_list = [item for sublist in records.values() for item in sublist]
+    x,_ = ElectrodeRecord.electrode_list_to_array(flat_list)
+
+    pcas = torch.from_numpy(pcas).type(torch.float32)
+    data = torch.from_numpy(x).type(torch.float32)
+
+    data[:, :3] = (data[:, :3] - min_max_pts[0]) / (min_max_pts[1] - min_max_pts[0])
+
+
+    res = model(data, pcas)
+    res = res.detach().numpy()
+    res = transl_scaller.inverse_transform(res)
+    numpy_array = np.eye(4)
+    numpy_array[3, :3] = -res[0]
+    if mirror:
+        numpy_array[3, :3] = numpy_array[3, :3] * [-1, 1, 1]
+
+    # Create a new vtkMatrix4x4 and set its elements using the numpy array
+    matrix = vtk.vtkMatrix4x4()
+    for i in range(4):
+        for j in range(4):
+            matrix.SetElement(i, j, numpy_array[i, j])
+
+    # Create a new transform node and set the matrix to it
+    transformNode = slicer.vtkMRMLLinearTransformNode()
+    transformNode.SetAndObserveMatrixTransformToParent(matrix)
+    slicer.mrmlScene.AddNode(transformNode)
+
 
 def display_mesh(mesh, node_name):
     modelNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
     modelNode.SetAndObservePolyData(mesh)
     modelNode.SetDisplayVisibility(True)
     modelNode.SetName(node_name)
+
     displayNode = modelNode.GetDisplayNode()
     if displayNode is None:
         displayNode = slicer.mrmlScene.CreateNodeByClass("vtkMRMLModelDisplayNode")
@@ -602,6 +819,7 @@ def display_mesh(mesh, node_name):
     displayNode.SetScalarVisibility(1)
     displayNode.SetVisibility3D(1)
     displayNode.SetVisibility2D(1)
+    displayNode.SetOpacity(0.3)
     displayNode.Modified()
     return modelNode
 
