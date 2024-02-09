@@ -7,7 +7,8 @@ from typing import Annotated, Optional
 import sys
 import numpy as np
 import qt
-from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, ElectrodeArray
+from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, ElectrodeArray, \
+    optimisation_criterion, clasify_mers
 from Lib.visualisiation import LeadORLogic
 import torch
 import vtk
@@ -33,13 +34,14 @@ from slicer import vtkMRMLScalarVolumeNode
 from dbs_image_utils.mask import SubcorticalMask
 import sitkUtils
 from dbs_image_utils.histogram_standartisation import HistogramStandartisation
-from dbs_image_utils.nets import CenterDetector, CenterAndPCANet,TransformerShiftPredictor
+from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerShiftPredictor, TransformerClassifier
 import mer_lib.processor as proc
 import mer_lib.artefact_detection as ad
 import mer_lib.feature_extraction as fe
 import mer_lib.data as mer_dat
 
-def nrms_normalisation( data: MER_data):
+
+def nrms_normalisation(data: MER_data):
     """
     across all trajectories together:
         NRMS = 1 + (NRMS1-1) / (p95(NRMS1)-1)
@@ -47,18 +49,42 @@ def nrms_normalisation( data: MER_data):
 
     extracted_features = data.extracted_features
     percentile_95 = np.percentile(extracted_features, 95)
-    data.extracted_features = 1 + (extracted_features - 1) /  ( percentile_95 -1)
-
+    data.extracted_features = 1 + (extracted_features - 1) / (percentile_95 - 1)
 
     return data
 
+
 def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
+    """
+    Get the transformation matrix using FLIRT.
+
+    Args:
+        mat_file (str): Path to the FLIRT transformation matrix file.
+        src_file (str): Path to the source image file.
+        dest_file (str): Path to the destination image file.
+        from_ (str): Source image space.
+        to (str): Destination image space.
+
+    Returns:
+        numpy.ndarray: The transformation matrix.
+
+    """
     im_src = fim.Image(src_file, loadData=False)
     im_dest = fim.Image(dest_file, loadData=False)
     forward_transf_fsl = fl.readFlirt(mat_file)
     return fl.fromFlirt(forward_transf_fsl, im_src, im_dest, from_, to)
 
+
 def get_control_points(markups_node):
+    """
+    Retrieves the world positions of all control points in a markups node.
+
+    Args:
+        markups_node: The markups node from which to retrieve the control points.
+
+    Returns:
+        A list of world positions of all control points in the markups node.
+    """
     points = []
     for i in range(markups_node.GetNumberOfControlPoints()):
         points.append(markups_node.GetNthControlPointPositionWorld(i))
@@ -66,6 +92,15 @@ def get_control_points(markups_node):
 
 
 def get_transform_matrix(transform_node):
+    """
+    Get the transformation matrix of a given transform node.
+
+    Parameters:
+    transform_node (vtk.vtkTransformNode): The transform node to get the matrix from.
+
+    Returns:
+    vtk.vtkMatrix4x4: The transformation matrix.
+    """
     matrix = vtk.vtkMatrix4x4()
     transform_node.GetMatrixTransformToParent(matrix)
     return matrix
@@ -83,19 +118,94 @@ def apply_transformation(entry_target, transformation_matrix):
     return cross_generation_mni(ent_tg_native=entry_target, to_mni=transformation_matrix)
 
 
-def read_mer_data(file_path,pattern):
+def read_mer_data(file_path, pattern):
     return MER_data.read_ontario_data(str(Path(file_path).parent), pattern)
 
 
 def process_mer_data(mer_data):
+    """
+    Process the MER data using a series of predefined steps.
+
+    Args:
+        mer_data (list): The MER data to be processed.
+
+    Returns:
+        list: The processed MER data.
+    """
+    def min_max_scaler(data: MER_data):
+        extracted_features = data.extracted_features
+        data.extracted_features = (extracted_features - extracted_features.min())/(extracted_features.max() - extracted_features.min())
+
+        return data
+
     runner = proc.Processor()
-    runner.set_processes([ad.covariance_method, fe.nrms_calculation, nrms_normalisation])
+    runner.set_processes([ad.covariance_method, fe.nrms_calculation, nrms_normalisation,min_max_scaler])
     mer_data = runner.run(mer_data)
     return mer_data
 
 
 def extract_electrode_records(entry_target, mer_data, transformation_matrix):
-        return ElectrodeRecord.extract_electrode_records_from_array(entry_target, mer_data, transformation=transformation_matrix)
+    """
+    Extracts electrode records from an array of MER data.
+
+    Args:
+        entry_target (str): The target entry for electrode extraction.
+        mer_data (array): The array of MER data.
+        transformation_matrix (array): The transformation matrix for coordinate transformation.
+
+    Returns:
+        list: A list of extracted electrode records.
+    """
+    return ElectrodeRecord.extract_electrode_records_from_array(entry_target, mer_data,
+                                                                transformation=transformation_matrix)
+
+
+def read_mesh(file_name):
+    mesh = vtk.vtkOBJReader()
+    mesh.SetFileName(file_name)
+    mesh.Update()
+    mesh = mesh.GetOutput()
+    return mesh
+
+
+def optimise_mer_signal(mer_data, origin_shift: np.ndarray, mesh):
+    """
+    optimise the signal of the mer data to get the best overlap with the mesh
+    input: mer_data: List[ElectrodeRecord]
+
+    """
+    # convert mer_data to torch tensor
+    x, mer_label = ElectrodeRecord.electrode_list_to_array(mer_data)
+
+
+    mer_data = torch.from_numpy(x).type(torch.float32)
+
+    mer_label = torch.from_numpy(mer_label).type(torch.int)
+
+    optimise_f = lambda x: optimisation_criterion(mer_data, mer_label, shift=x, mesh=mesh) + torch.linalg.norm(x)
+
+    x = torch.from_numpy(origin_shift).requires_grad_(True)
+
+    print("Origin estimated value of shift:", x)
+    print("Origin estimated value of the function:", optimise_f(x).item())
+    print("original estimated distance", torch.linalg.norm(x))
+    # Define the optimizer
+    optimizer = torch.optim.SGD([x], lr=0.004)
+
+    # Optimization loop
+    for i in range(100):
+        optimizer.zero_grad()  # Zero out the gradients
+        output = optimise_f(x)  # Compute the function value
+        output.backward()  # Compute gradients
+        optimizer.step()  # Update parameters
+
+    print("Optimized value of x:", x)
+    print("final estimated distance", torch.linalg.norm(x))
+    print("Optimized value of the function:", optimise_f(x).item())
+
+    return x.detach().numpy()
+
+
 #
 # load_nifty
 #
@@ -262,6 +372,28 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Rest of the code...
 
 
+def convert_to_tensor(shape_im):
+    shape_im = torch.from_numpy(np.expand_dims(np.expand_dims(shape_im, axis=0), axis=0)).type(torch.float32)
+    return shape_im
+
+
+def compute_center_offset(center_pred_point, out_pcas, mm_offset):
+    off_cent = (out_pcas[:, -3:] * 2 * mm_offset) - mm_offset  # reshape center offset
+    result_center = center_pred_point + off_cent.detach().numpy()
+    return off_cent, result_center
+
+
+def reshape_shape(shape):
+    shape = np.reshape(shape, (-1, 1))
+    return shape
+
+
+def apply_mirror(shape, result_center):
+    shape = shape * [-1, 1, 1]
+    result_center = result_center * [-1, 1, 1]
+    return shape, result_center
+
+
 class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -273,6 +405,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)  # needed for parameter node observation
+        self.mer_classification_net = None
         self.processing_folder = None
         self.mesh1 = None
         self.center_orig = None
@@ -326,6 +459,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.segmentationButton.clicked.connect(self.onSegmentationButtonClicked)
         self.ui.inputPathSelector.connect('currentPathChanged(QString)', self.onInputFolderSelect)
         self.ui.merButton.clicked.connect(self.onMerRunButtonClicked)
+        self.ui.merFinalButton.clicked.connect(self.on_calculate_shift)
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
 
@@ -362,11 +496,16 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         net.load_state_dict(cd_state_dict)
         self.shape_predictor = net
 
-        self.net_shift = TransformerShiftPredictor(4, 16, 1, 1, 10)
+        self.net_shift = TransformerShiftPredictor(4, 32, 1, 1, 10)
         cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
         self.net_shift.load_state_dict(cd_state_dict)
 
-        self.mer_transforms = self._read_pickle(self.resourcePath('nets/mer_transforms.pkl'))
+        self.mer_transforms = self._read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
+
+        self.mer_classification_net = TransformerClassifier(4,64,1,1)
+        cd_state_dict = torch.load(self.resourcePath('nets/transformer_classifier.pt'), map_location=torch.device('cpu'))
+        self.mer_classification_net.load_state_dict(cd_state_dict)
+
 
     def _read_pickle(self, filename):
         f = open(filename, 'rb')
@@ -592,11 +731,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def segment_side(self, center_pred_point, image_coords, mirror=False):
         # load mesh
-        mesh = vtk.vtkOBJReader()
-        mesh.SetFileName(self.resourcePath('nets/3.obj'))
-        mesh.Update()
-        mesh = mesh.GetOutput()
-
+        mesh = read_mesh(self.resourcePath('nets/3.obj'))
         mm_offset = 2
         t2 = slicer.util.getNode("t2_normalised")
         image_processor = SlicerImage(t2.GetImageData())
@@ -605,31 +740,41 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         t2.GetIJKToRASMatrix(transform_ras_to_ijk)
         transform_ras_to_ijk.Invert()
 
-        shape_im = image_processor.compute_image_at_pts(points=image_coords,
-                                                        transform_ras_to_ijk=transform_ras_to_ijk)
-        shape_im = np.reshape(shape_im, (self.shape_label_mask.n_x,
-                                         self.shape_label_mask.n_y, self.shape_label_mask.n_z))
-        shape_im = self.shape_histogram.apply_normalization(shape_im)
-        shape_im = torch.from_numpy(np.expand_dims(np.expand_dims(shape_im, axis=0), axis=0)).type(torch.float32)
+        shape_im = self.compute_image_at_pts(image_processor, image_coords, transform_ras_to_ijk)
+        shape_im = self.apply_normalization(shape_im)
+        shape_im = convert_to_tensor(shape_im)
 
         print("segm start")
         out_pcas = self.shape_predictor(shape_im, False)
         print("segm finished")
-        off_cent = (out_pcas[:, -3:] * 2 * mm_offset) - mm_offset  # reshape center offset
-        # compute resulting center
-        result_center = center_pred_point + off_cent.detach().numpy()
-        pcas = out_pcas[:, :-3]
-        shape = self.shape_pca_res[0].inverse_transform(pcas.detach().numpy())[0]
+        off_cent, result_center = compute_center_offset(center_pred_point, out_pcas, mm_offset)
+        shape = self.compute_shape(out_pcas, result_center)
 
-        shape = np.reshape(shape, (int(shape.shape[0] / 3), 3)) + result_center
-        res_pts = np.reshape(shape, (-1, 1))
-        print(shape.shape)
+        #shape = reshape_shape(shape)
+        res_pts = shape
 
+        print(res_pts.shape,res_pts)
         if mirror:
-            shape = shape * [-1, 1, 1]
-            result_center = result_center * [-1, 1, 1]
+            shape, result_center = apply_mirror(shape, result_center)
 
         return change_mesh(mesh, shape), result_center, res_pts
+
+    def compute_image_at_pts(self, image_processor, image_coords, transform_ras_to_ijk):
+        shape_im = image_processor.compute_image_at_pts(points=image_coords,
+                                                        transform_ras_to_ijk=transform_ras_to_ijk)
+        shape_im = np.reshape(shape_im, (self.shape_label_mask.n_x,
+                                         self.shape_label_mask.n_y, self.shape_label_mask.n_z))
+        return shape_im
+
+    def apply_normalization(self, shape_im):
+        shape_im = self.shape_histogram.apply_normalization(shape_im)
+        return shape_im
+
+    def compute_shape(self, out_pcas, result_center):
+        pcas = out_pcas[:, :-3]
+        shape = self.shape_pca_res[0].inverse_transform(pcas.detach().numpy())[0]
+        shape = np.reshape(shape, (int(shape.shape[0] / 3), 3)) + result_center
+        return shape
 
     def brain_extraction(self):
 
@@ -684,8 +829,8 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             image_coords_orig = self.shape_label_mask.get_coords_list() + res_a1
             image_coords_mirr = image_coords_mirr * np.array([-1, 1, 1])
 
-            mesh_orig, cent_orig, self.pts_left= self.segment_side(res_a1, image_coords_orig)
-            mesh_mirr, cent_mirr,self.pts_right = self.segment_side(res_a0, image_coords_mirr, True)
+            mesh_orig, cent_orig, self.pts_left = self.segment_side(res_a1, image_coords_orig)
+            mesh_mirr, cent_mirr, self.pts_right = self.segment_side(res_a0, image_coords_mirr, True)
 
             print(cent_orig, cent_mirr)
             cent_mirr = cent_mirr[0]
@@ -731,8 +876,8 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.mer_left_path = self.ui.LeftMERFileSelector.currentPath
         self.mer_right_path = self.ui.RightMERFileSelector.currentPath
 
-        self.mer_left = read_mer_data(self.mer_left_path,"*run-02*")
-        self.mer_right = read_mer_data(self.mer_right_path,"*run-01*")
+        self.mer_left = read_mer_data(self.mer_left_path, "*run-02*")
+        self.mer_right = read_mer_data(self.mer_right_path, "*run-01*")
 
         self.mer_left = process_mer_data(self.mer_left)
         self.mer_right = process_mer_data(self.mer_right)
@@ -750,59 +895,100 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             print(records)
             logic.setUpTrajectory(i, getattr(ea_left, el_name), records, True, "left_" + el_name, 1, 1, 1)
 
-
         # mirror right pts
         records_right = {}
         for key, val in self.right_e_rec.items():
             records_right[key] = []
             for rec in val:
-                records_right[key].append(ElectrodeRecord(rec.location * [-1,1,1],rec.record,0))
+                records_right[key].append(ElectrodeRecord(rec.location * [-1, 1, 1], rec.record, 0))
+
+        self.right_shift = compute_transformation_from_signal(records_right, self.pts_right,
+                                                              self.mer_transforms['min_max_p'],
+                                                              self.mer_transforms['pipe'], self.net_shift)
+        self.left_shift = compute_transformation_from_signal(self.left_e_rec, self.pts_left,
+                                                             self.mer_transforms['min_max_p'],
+                                                             self.mer_transforms['pipe'], self.net_shift)
+        records_right = clasify_mers(records_right, self.mer_classification_net)
+        for key, val in records_right.items():
+            for rec in val:
+                rec.location = rec.location * [-1, 1, 1]
+        self.right_e_rec = records_right
+        self.left_e_rec = clasify_mers(self.left_e_rec, self.mer_classification_net)
+
+    def on_calculate_shift(self):
+
+        # compute left shift
+        mesh = read_mesh(self.resourcePath('nets/3.obj'))
+        mesh = change_mesh(mesh, self.pts_left)
+
+        left_list = []
+        for key, val in self.left_e_rec.items():
+            for rec in val:
+                left_list.append(ElectrodeRecord(rec.location, rec.record, rec.label))
+        left_shift = optimise_mer_signal(left_list, self.left_shift, mesh)
+
+        right_list = []
+        for key, val in self.right_e_rec.items():
+            for rec in val:
+                right_list.append(ElectrodeRecord(rec.location * [-1, 1, 1], rec.record, rec.label))
+
+        mesh = change_mesh(mesh, self.pts_right)
+        # compute right shift
+        right_shift = optimise_mer_signal(right_list, self.left_shift, mesh)
+        right_shift = right_shift * [-1, 1, 1]
+
+        generate_transformation_from_shift(left_shift, "left_shift")
+        generate_transformation_from_shift(right_shift, "right_shift")
+
+        pass
 
 
-
-        compute_transformation_from_signal(records_right, self.pts_right, self.mer_transforms['min_max_p'],
-                                           self.mer_transforms['pipe'], self.net_shift, "right_transf", True)
-        compute_transformation_from_signal(self.left_e_rec, self.pts_left, self.mer_transforms['min_max_p'],
-                                             self.mer_transforms['pipe'], self.net_shift, "left_transf", False)
-
-def compute_transformation_from_signal( records,
-                                        mesh_pts,
-                                        min_max_pts,
-                                        transformer,model, name,mirror=False):
+def compute_transformation_from_signal(records,
+                                       mesh_pts,
+                                       min_max_pts,
+                                       transformer, model):
     """
 
     """
     transl_scaller = MinMaxScaler().fit([[-10, -10, -10], [10, 10, 10]])  # config tesy
-    print(mesh_pts)
-    pcas = transformer.transform([mesh_pts])
-    print(mesh_pts)
+    m2 = np.reshape(mesh_pts,(-1,1))
+    m2 = m2.reshape(-1).tolist()
+
+    #print(m2.shape, m2)
+    pcas = transformer.transform([m2])
+    #print()
     flat_list = [item for sublist in records.values() for item in sublist]
-    x,_ = ElectrodeRecord.electrode_list_to_array(flat_list)
+    x, _ = ElectrodeRecord.electrode_list_to_array(flat_list)
 
     pcas = torch.from_numpy(pcas).type(torch.float32)
     data = torch.from_numpy(x).type(torch.float32)
 
     data[:, :3] = (data[:, :3] - min_max_pts[0]) / (min_max_pts[1] - min_max_pts[0])
 
-
     res = model(data, pcas)
     res = res.detach().numpy()
     res = transl_scaller.inverse_transform(res)
-    numpy_array = np.eye(4)
-    numpy_array[3, :3] = -res[0]
-    if mirror:
-        numpy_array[3, :3] = numpy_array[3, :3] * [-1, 1, 1]
 
-    # Create a new vtkMatrix4x4 and set its elements using the numpy array
+    return res[0]
+
+
+def generate_transformation_from_shift(shift, name):
+    numpy_array = np.eye(4)
+    numpy_array[:3, 3] = -shift
     matrix = vtk.vtkMatrix4x4()
     for i in range(4):
         for j in range(4):
             matrix.SetElement(i, j, numpy_array[i, j])
 
-    # Create a new transform node and set the matrix to it
     transformNode = slicer.vtkMRMLLinearTransformNode()
+    transformNode.SetName(name)
     transformNode.SetAndObserveMatrixTransformToParent(matrix)
     slicer.mrmlScene.AddNode(transformNode)
+
+
+def slicer_transform_electrode(side):
+    transform_name = "right_shift" if side == "right" else "left_shift"
+    transform = slicer.util.getNode(transform_name)
 
 
 def display_mesh(mesh, node_name):

@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import Optional, List, Iterable, Dict
 
 import numpy as np
+import torch
+import vtk
 from mer_lib.data import MER_data
 
 
@@ -278,4 +280,197 @@ class ElectrodeRecord:
                 result[el_name].append(er)
                 #result.append(er)
         return result
+
+def check_points_inside_vtk_mesh(mesh, points):
+    """
+    Check if points are inside a VTK mesh.
+
+    Parameters:
+    mesh (vtk.vtkPolyData): The VTK mesh.
+    points (np.ndarray): An array of points.
+
+    Returns:
+    np.ndarray: An array of booleans indicating whether each point is inside the mesh.
+    """
+
+    # Create a vtkPoints object from the numpy array
+    vtk_points = vtk.vtkPoints()
+    for point in points:
+        vtk_points.InsertNextPoint(point)
+
+    # Create a vtkPolyData object from the vtkPoints
+    polydata = vtk.vtkPolyData()
+    polydata.SetPoints(vtk_points)
+
+    # Use vtkSelectEnclosedPoints to check if the points are inside the mesh
+    select_enclosed_points = vtk.vtkSelectEnclosedPoints()
+    select_enclosed_points.SetInputData(polydata)
+    select_enclosed_points.SetSurfaceData(mesh)
+    select_enclosed_points.Update()
+
+    # Get the output of vtkSelectEnclosedPoints as a numpy array
+    is_inside = np.zeros(points.shape[0], dtype=bool)
+    for i in range(points.shape[0]):
+        is_inside[i] = select_enclosed_points.IsInside(i)
+
+    return is_inside
+
+def distances_to_mesh(points, mesh_vertices):
+    """
+    Calculate the distances from given points to a mesh composed of vertices.
+
+    Args:
+        points (torch.Tensor): Tensor of shape (N, 3) representing N points.
+        mesh_vertices (torch.Tensor): Tensor of shape (M, 3) representing M vertices of the mesh.
+
+    Returns:
+        torch.Tensor: Tensor of shape (N,) containing the distances from each point to the mesh.
+    """
+    # Expand dimensions of points and mesh vertices for broadcasting
+    points_expanded = points.unsqueeze(1)  # Shape: (N, 1, 3)
+    mesh_vertices_expanded = mesh_vertices.unsqueeze(0)  # Shape: (1, M, 3)
+
+    # Calculate distances between points and mesh vertices
+    distances = torch.norm(points_expanded - mesh_vertices_expanded, dim=-1)  # Shape: (N, M)
+
+    # Compute the minimum distance for each point
+    min_distances, _ = distances.min(dim=-1)  # Shape: (N,)
+
+    return min_distances
+
+
+def compute_distances_to_mesh( mesh_points: np.ndarray, points_to_compute: torch.Tensor ) -> (np.ndarray,np.ndarray):
+    res_vector,res_dists= [],[]
+
+    for i in points_to_compute.shape[0]:
+        mp = mesh_points - points_to_compute[i]
+        norms = np.linalg.norm(mp,axis=1)
+        id = norms.tolist().index(min(norms))
+        res_vector.append( mp[id]/ norms[id])
+        res_dists.append(norms[id])
+    return np.array(res_dists),np.array(res_vector)
+
+
+def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Tensor:
+    """
+    Generates a correctly placed bitmap based on the labeled points and current output.
+
+    Args:
+        labeled_points (numpy.ndarray): Array of labeled points.
+        current_output (numpy.ndarray): Array of current output.
+
+    Returns:
+        torch.Tensor: Tensor representing the correctly placed bitmap.
+    """
+    x = []
+    #print(labeled_points.shape)
+    #print(current_output.shape)
+    for i in range(len(current_output)):
+        if current_output[i] != labeled_points[i]: # not equal
+            if labeled_points[i] == 1:
+                x.append(2)
+            else:
+                x.append(1)
+        else:
+            x.append(0)
+
+    return torch.from_numpy(np.array(x))
+def extract_points_from_mesh(mesh):
+    # Get the vtkPoints object from the mesh
+    points = mesh.GetPoints()
+
+    # Initialize an empty list to store the points
+    points_list = []
+
+    # Iterate over all points in the vtkPoints object
+    for i in range(points.GetNumberOfPoints()):
+        pt = points.GetPoint(i)
+        points_list.append(pt[0])
+        points_list.append(pt[1])
+        points_list.append(pt[2])
+
+    # Return the list of points
+    return points_list
+def optimisation_criterion(orig_points, in_out, shift, mesh: vtk.vtkPolyData):
+    """
+    Calculate the criterion value for a given set of original points, in_out values, shift vector, and mesh.
+
+    Args:
+        orig_points (torch.Tensor): The original points.
+        in_out (torch.Tensor): The in_out values.
+        shift (torch.Tensor): The shift vector.
+        mesh (cMesh): The mesh object.
+
+    Returns:
+        torch.Tensor: The criterion value.
+    """
+
+    orig_points = orig_points[:, :3]
+    if isinstance(orig_points, np.ndarray):
+        orig_points = torch.from_numpy(orig_points)
+    # print(orig_points)
+    new_points = orig_points - shift
+    #    if isinstance(orig_points,np.ndarray):
+    #        points_inside_posttrans = mesh.is_points_inside(new_points.tolist())
+    #    else:
+    points_inside_posttrans = check_points_inside_vtk_mesh(mesh,new_points.detach().numpy())
+
+    weight = generate_correctly_placed_bitmap(in_out, points_inside_posttrans)
+    # print(f'    {(weight>0).sum():.2f}')
+
+    mp = extract_points_from_mesh(mesh)
+    # print ("mesh pt 0", mp[:3])
+    mesh_pts = np.reshape(mp,(len(mp) // 3, 3))
+
+    mesh_pts = torch.from_numpy(mesh_pts)
+    # print(torch.abs(distances_to_mesh(new_points,mesh_pts)))
+
+    result_error = (weight * torch.abs(distances_to_mesh(new_points, mesh_pts))).sum()
+    if (weight > 0).sum() == 0:
+        result_error = 0
+    else:
+        result_error = result_error / (weight > 0).sum()
+
+    result_error = result_error + ((weight > 0).sum()) * 0.1
+
+    return result_error
+
+
+
+def clasify_mers(mer_data : Dict[str , List[ElectrodeRecord]],model):
+    """
+    clasify mers
+    """
+
+    tmp = {}
+    tmp_vector = []
+    for k,v in mer_data.items():
+        #print(k)
+        tmp[k] = len(v)
+        tmp_vector +=v
+    record,target = ElectrodeRecord.electrode_list_to_array(tmp_vector)
+
+
+
+    record = torch.from_numpy(record).float()
+    target = torch.from_numpy(target).float()
+    with torch.no_grad():
+        output = model(record)
+
+    # convert back electrode records
+    output = output.numpy()
+    i = 0
+    res_el_record = {}
+    for k,v in tmp.items():
+        electrode_output = output[i:i+v] > 0.5
+        res_el_record[k] = []
+        for j in range(v):
+            tmp_vector[i+j].label = electrode_output[j]
+            res_el_record[k].append(tmp_vector[i+j])
+
+        i += v
+    return res_el_record
+
+
+    return output
 
