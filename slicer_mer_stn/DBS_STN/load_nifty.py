@@ -3,14 +3,15 @@ import os
 import pickle
 import shutil
 import subprocess
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Tuple
 import sys
 import numpy as np
 import qt
+from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLModelNode, vtkMRMLTransformNode
+
 from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, ElectrodeArray, \
     optimisation_criterion, clasify_mers
 from Lib.visualisiation import LeadORLogic
-import torch
 import vtk
 import tempfile
 import slicer
@@ -39,6 +40,12 @@ import mer_lib.processor as proc
 import mer_lib.artefact_detection as ad
 import mer_lib.feature_extraction as fe
 import mer_lib.data as mer_dat
+
+
+def _compute_min_max_scaler(pt_min, pt_max):
+    a = MinMaxScaler()
+    a.fit([pt_min, pt_max])
+    return a
 
 
 def nrms_normalisation(data: MER_data):
@@ -132,14 +139,16 @@ def process_mer_data(mer_data):
     Returns:
         list: The processed MER data.
     """
+
     def min_max_scaler(data: MER_data):
         extracted_features = data.extracted_features
-        data.extracted_features = (extracted_features - extracted_features.min())/(extracted_features.max() - extracted_features.min())
+        data.extracted_features = (extracted_features - extracted_features.min()) / (
+                extracted_features.max() - extracted_features.min())
 
         return data
 
     runner = proc.Processor()
-    runner.set_processes([ad.covariance_method, fe.nrms_calculation, nrms_normalisation,min_max_scaler])
+    runner.set_processes([ad.covariance_method, fe.nrms_calculation, nrms_normalisation, min_max_scaler])
     mer_data = runner.run(mer_data)
     return mer_data
 
@@ -176,7 +185,6 @@ def optimise_mer_signal(mer_data, origin_shift: np.ndarray, mesh):
     """
     # convert mer_data to torch tensor
     x, mer_label = ElectrodeRecord.electrode_list_to_array(mer_data)
-
 
     mer_data = torch.from_numpy(x).type(torch.float32)
 
@@ -394,6 +402,27 @@ def apply_mirror(shape, result_center):
     return shape, result_center
 
 
+def compute_image_at_pts(image_processor, image_coords, transform_ras_to_ijk, result_shape):
+    shape_im = image_processor.compute_image_at_pts(points=image_coords,
+                                                    transform_ras_to_ijk=transform_ras_to_ijk)
+    shape_im = np.reshape(shape_im, result_shape)
+    return shape_im
+
+
+def _read_pickle(filename):
+    f = open(filename, 'rb')
+    res = pickle.load(f)
+    f.close()
+    return res
+
+
+def compute_shape(pca_transform, out_pcas, result_center):
+    pcas = out_pcas[:, :-3]
+    shape = pca_transform.inverse_transform(pcas.detach().numpy())[0]
+    shape = np.reshape(shape, (int(shape.shape[0] / 3), 3)) + result_center
+    return shape
+
+
 class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -416,7 +445,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.det_mask = None
         self.intensity_normalisation_done = False
         self.wm_seg_done = False
-        self.logic = None
+        self.logic: MRI_MERLogic = None
         self._parameterNode = None
         self._parameterNodeGuiTag = None
 
@@ -439,16 +468,19 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
-        self.logic = load_niftyLogic()
-
+        self.logic: MRI_MERLogic = MRI_MERLogic()
+        self._create_temp_folder()
         # Connections
 
         # These connections ensure that we update parameter node when scene is closed
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
-        self.ui.t2InputSelector.connect('textActivated(QString)', lambda x: self.on_chage_load_image("t2", x))
-        self.ui.structuralInputSelector.connect('textActivated(QString)', lambda x: self.on_chage_load_image("t1", x))
+        self.ui.t2InputSelector.connect('textActivated(QString)',
+                                        lambda x: self.logic.on_chage_load_image("t2", x, self.temp_workdir.name))
+        self.ui.structuralInputSelector.connect('textActivated(QString)',
+                                                lambda x: self.logic.on_chage_load_image("t1", x,
+                                                                                         self.temp_workdir.name))
         # Buttons
         # self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
         self.ui.preprocessingButton.clicked.connect(self.onApplyPreprocessing)
@@ -460,23 +492,20 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.inputPathSelector.connect('currentPathChanged(QString)', self.onInputFolderSelect)
         self.ui.merButton.clicked.connect(self.onMerRunButtonClicked)
         self.ui.merFinalButton.clicked.connect(self.on_calculate_shift)
+        self.ui.merApplyTransformation.clicked.connect(self.apply_transformation_mer)
+
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
 
         # create temp workdir
-        self._create_temp_folder()
+
         # self.lead_or_bind()
         # initialise variables
         print(self.resourcePath('nets/cent_detect_hist.pkl'))
-        self.cent_det_hist = self._read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
+        self.cent_det_hist = _read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
 
-        self.det_mask: SubcorticalMask = self._read_pickle(self.resourcePath('nets/detect_mask.pkl'))
+        self.det_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/detect_mask.pkl'))
         print(self.det_mask.get_coords_3d()[self.det_mask.n_x // 2, self.det_mask.n_y // 2, self.det_mask.n_z // 2, :])
-
-        def _compute_min_max_scaler(pt_min, pt_max):
-            a = MinMaxScaler()
-            a.fit([pt_min, pt_max])
-            return a
 
         # load center detector
         self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
@@ -485,12 +514,12 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         net.load_state_dict(cd_state_dict)
         self.center_detector = net
 
-        self.shape_pca_res = self._read_pickle(self.resourcePath('nets/shape_pcas.pkl'))
+        self.shape_pca_res = _read_pickle(self.resourcePath('nets/shape_pcas.pkl'))
 
-        self.shape_label_mask: SubcorticalMask = self._read_pickle(self.resourcePath('nets/stn_shape_mask.pkl'))
+        self.shape_label_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/stn_shape_mask.pkl'))
 
         # load segmentation model
-        self.shape_histogram = self._read_pickle(self.resourcePath('nets/shape_hist.pkl'))
+        self.shape_histogram = _read_pickle(self.resourcePath('nets/shape_hist.pkl'))
         net = CenterAndPCANet(self.shape_pca_res[1])
         cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
         net.load_state_dict(cd_state_dict)
@@ -500,26 +529,20 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
         self.net_shift.load_state_dict(cd_state_dict)
 
-        self.mer_transforms = self._read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
+        self.mer_transforms = _read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
 
-        self.mer_classification_net = TransformerClassifier(4,64,1,1)
-        cd_state_dict = torch.load(self.resourcePath('nets/transformer_classifier.pt'), map_location=torch.device('cpu'))
+        self.mer_classification_net = TransformerClassifier(4, 64, 1, 1)
+        cd_state_dict = torch.load(self.resourcePath('nets/transformer_classifier.pt'),
+                                   map_location=torch.device('cpu'))
         self.mer_classification_net.load_state_dict(cd_state_dict)
-
-
-    def _read_pickle(self, filename):
-        f = open(filename, 'rb')
-        res = pickle.load(f)
-        f.close()
-        return res
 
     def on_chage_load_image(self, key, newvalue):
         x = None
         try:
             x = getattr(self, key)
-            print(1)
+            # print(1)
         except:
-            print(1.1)
+            # print(1.1)
             pass
         if x is not None:
             if x == newvalue:
@@ -627,13 +650,12 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onApplyPreprocessing(self) -> None:
         print("start on appl")
 
-        slicer_preprocessing.elastix_registration(ref_image=str(self.processing_folder / self.t1),
-                                                  flo_image=str(self.processing_folder / self.t2),
-                                                  elastix_parameters=self.resourcePath('elastix/rigid_mri.txt')
-                                                  , out_folder=self.temp_workdir.name
-                                                  )
-        ((Path(self.temp_workdir.name) / "result.0.nii.gz")
-         .rename((Path(self.temp_workdir.name) / "coreg_t2.nii.gz")))
+        self.t1_node = slicer.util.getNode('t1')
+
+        self.t2_node = slicer.util.getNode('t2')
+        self.logic.coregistration_t2_t1(self.t1_node.GetStorageNode()
+                                        , t2=self.t2_node.GetStorageNode(),
+                                        out_name=str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
 
         self.popup_window()
         print("fin on appl")
@@ -665,12 +687,12 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         print("test onApplyIntensity")
         # slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
         if self.wm_seg_done:
-            slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
+            self.logic.intensity_normalisation(self.temp_workdir.name)
             self.intensity_normalisation_done = True
             self.t2_node = slicer.util.getNode('t2')
             slicer.mrmlScene.RemoveNode(self.t2_node)
             t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t2_normalised.nii.gz"))
-            # t2_node.setName("t2_normalised")
+            t2_node.SetName("t2")
             self.t2_node = t2_node
 
             pass
@@ -678,21 +700,10 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onTwoStepCoregistration(self):
         print("test onTwoStepCoregustration")
-        mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
-        mni_mask = self.resourcePath('MNI/MNI152_T1_1mm_subbr_mask.nii.gz')
-        elastix_affine = self.resourcePath('elastix/affine_mri.txt')
-        struct_image = str(Path(self.temp_workdir.name) / "t1.nii.gz")
-        slicer_preprocessing.elastix_registration(ref_image=mni,
-                                                  flo_image=struct_image,
-                                                  elastix_parameters=elastix_affine,
-                                                  out_folder=self.temp_workdir.name)
-        tfm_file = Path(self.temp_workdir.name) / "TransformParameters.0.tfm"
-        transfortm_node = slicer.util.loadTransform(tfm_file)
-        transfortm_node.SetName("to_mni")
-        self.transform_node = transfortm_node
-        t2_image = slicer.util.getNode("t2_normalised")
-        t2_image.SetAndObserveTransformNodeID(transfortm_node.GetID())
-        t2_image.HardenTransform()
+        t2_image = slicer.util.getNode("t2")
+
+        self.transform_node = self.logic.two_step_coregistration(t2_image, self.temp_workdir.name)
+        self.transform_node.SetName("to_mni")
 
     def onApplyButton(self) -> None:
         """
@@ -717,6 +728,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         print("new_path", new_path)
         with slicer.util.tryWithErrorDisplay("Failed to compute results.", waitCursor=True):
             self.processing_folder = Path(new_path)
+            self.logic.processing_folder = self.processing_folder
             ###load folder]
             images = get_images_in_folder(new_path)
             self.ui.structuralInputSelector.clear()
@@ -729,124 +741,31 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             #### load
             pass
 
-    def segment_side(self, center_pred_point, image_coords, mirror=False):
-        # load mesh
-        mesh = read_mesh(self.resourcePath('nets/3.obj'))
-        mm_offset = 2
-        t2 = slicer.util.getNode("t2_normalised")
-        image_processor = SlicerImage(t2.GetImageData())
-
-        transform_ras_to_ijk = vtk.vtkMatrix4x4()
-        t2.GetIJKToRASMatrix(transform_ras_to_ijk)
-        transform_ras_to_ijk.Invert()
-
-        shape_im = self.compute_image_at_pts(image_processor, image_coords, transform_ras_to_ijk)
-        shape_im = self.apply_normalization(shape_im)
-        shape_im = convert_to_tensor(shape_im)
-
-        print("segm start")
-        out_pcas = self.shape_predictor(shape_im, False)
-        print("segm finished")
-        off_cent, result_center = compute_center_offset(center_pred_point, out_pcas, mm_offset)
-        shape = self.compute_shape(out_pcas, result_center)
-
-        #shape = reshape_shape(shape)
-        res_pts = shape
-
-        print(res_pts.shape,res_pts)
-        if mirror:
-            shape, result_center = apply_mirror(shape, result_center)
-
-        return change_mesh(mesh, shape), result_center, res_pts
-
-    def compute_image_at_pts(self, image_processor, image_coords, transform_ras_to_ijk):
-        shape_im = image_processor.compute_image_at_pts(points=image_coords,
-                                                        transform_ras_to_ijk=transform_ras_to_ijk)
-        shape_im = np.reshape(shape_im, (self.shape_label_mask.n_x,
-                                         self.shape_label_mask.n_y, self.shape_label_mask.n_z))
-        return shape_im
-
     def apply_normalization(self, shape_im):
         shape_im = self.shape_histogram.apply_normalization(shape_im)
         return shape_im
 
-    def compute_shape(self, out_pcas, result_center):
-        pcas = out_pcas[:, :-3]
-        shape = self.shape_pca_res[0].inverse_transform(pcas.detach().numpy())[0]
-        shape = np.reshape(shape, (int(shape.shape[0] / 3), 3)) + result_center
-        return shape
-
     def brain_extraction(self):
 
-        image_t1 = Path(self.temp_workdir.name) / "t1.nii.gz"
-
-        print("FINISHED EXTRACTOR")
-        mask_filename = str(Path(self.temp_workdir.name) / "t1_mask.nii.gz")
-        cmd = sys.executable + " "
-        cmd += self.resourcePath("py/bet.py") + " "
-        cmd += str(image_t1) + " " + mask_filename
-        subprocess.call(cmd, shell=True)
+        self.logic.brain_extraction(self.t1_node.GetStorageNode())
 
         self.t1_node = slicer.util.getNode('t1')
         slicer.mrmlScene.RemoveNode(self.t1_node)
         t1_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t1.nii.gz"))
         self.t1_node = t1_node
+        t1_node.SetName("t1")
         # t2_node.setName("t2_normalised")
 
         pass
 
-        # shape = np.reshape(shape, (-1, 1))
-
     def onSegmentationButtonClicked(self):
         mm_offset = 2
         print("Starting segmentation")
+        t2 = slicer.util.getNode("t2")
 
-        t2 = slicer.util.getNode("t2_normalised")
-        image_processor = SlicerImage(t2.GetImageData())
-
-        transform_ras_to_ijk = vtk.vtkMatrix4x4()
-        t2.GetIJKToRASMatrix(transform_ras_to_ijk)
-
-        transform_ras_to_ijk.Invert()
-        a = image_processor.compute_image_at_mask(self.det_mask, transform_ras_to_ijk)
-        a = list(a)
-        a[0] = self.cent_det_hist.apply_normalization(a[0])
-        a[1] = self.cent_det_hist.apply_normalization(a[1])
-
-        try:
-            res_a0 = np.expand_dims(a[0], axis=0)
-            res_a0 = self.center_detector(torch.from_numpy(np.expand_dims(res_a0, axis=0)))
-            res_a1 = np.expand_dims(a[1], axis=0)
-            res_a1 = self.center_detector(torch.from_numpy(np.expand_dims(res_a1, axis=0)))
-
-            res_a0 = self.center_detector_scaller.inverse_transform(res_a0.detach().numpy())[0]
-            res_a1 = self.center_detector_scaller.inverse_transform(res_a1.detach().numpy())[0]
-            self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
-            self.center_orig.AddControlPointWorld(-1 * res_a0[0], res_a0[1], res_a0[2])
-            self.center_orig.AddControlPointWorld(res_a1[0], res_a1[1], res_a1[2])
-            # compute segmentation
-            image_coords_mirr = self.shape_label_mask.get_coords_list() + res_a0
-            image_coords_orig = self.shape_label_mask.get_coords_list() + res_a1
-            image_coords_mirr = image_coords_mirr * np.array([-1, 1, 1])
-
-            mesh_orig, cent_orig, self.pts_left = self.segment_side(res_a1, image_coords_orig)
-            mesh_mirr, cent_mirr, self.pts_right = self.segment_side(res_a0, image_coords_mirr, True)
-
-            print(cent_orig, cent_mirr)
-            cent_mirr = cent_mirr[0]
-            cent_orig = cent_orig[0]
-            self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
-            self.center_orig.AddControlPointWorld(cent_mirr[0], cent_mirr[1], cent_mirr[2])
-            self.center_orig.AddControlPointWorld(cent_orig[0], cent_orig[1], cent_orig[2])
-
-            self.mesh1 = display_mesh(mesh_orig, "Mesh left")
-            self.mesh2 = display_mesh(mesh_mirr, "Mesh right")
-
-
-
-        except Exception as e:
-            raise e
-            # print(5)
+        left, right = self.logic.segmentSTNs(t2)
+        self.pts_left = left[1]
+        self.pts_right = right[1]
 
     def onMerRunButtonClicked(self):
         """
@@ -855,91 +774,40 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         right_markups = slicer.mrmlScene.GetNodeByID(self.ui.rightMarkupSelector.currentNodeID)
         left_markups = slicer.mrmlScene.GetNodeByID(self.ui.leftMarkupSelector.currentNodeID)
-
-        points_right = get_control_points(right_markups)
-        points_left = get_control_points(left_markups)
-
-        print(points_right)  # Print the positions of the control points for the right markups node
-        print(points_left)  # Print the positions of the control points for the left markups node
-
-        matrix = get_transform_matrix(transform_node=self.transform_node)
-        numpy_array = convert_to_numpy_array(matrix)
-
-        et_right = EntryTarget(Point.from_array(points_right[0]), Point.from_array(points_right[1]))
-        et_left = EntryTarget(Point.from_array(points_left[0]), Point.from_array(points_left[1]))
-
-        ea_left = apply_transformation(et_left, numpy_array)
-        ea_right = apply_transformation(et_right, numpy_array)
-
-        print(ea_right)  # Print the entry and target points for the right MER
-
         self.mer_left_path = self.ui.LeftMERFileSelector.currentPath
         self.mer_right_path = self.ui.RightMERFileSelector.currentPath
 
-        self.mer_left = read_mer_data(self.mer_left_path, "*run-02*")
-        self.mer_right = read_mer_data(self.mer_right_path, "*run-01*")
+        self.left_e_rec, self.right_e_rec = self.logic.process_mer_data(right_markups, left_markups,
+                                                                        self.transform_node, self.mer_left_path,
+                                                                        self.mer_right_path)
 
-        self.mer_left = process_mer_data(self.mer_left)
-        self.mer_right = process_mer_data(self.mer_right)
+    def apply_transformation_mer(self):
 
-        self.right_e_rec = extract_electrode_records(ea_right, self.mer_right, numpy_array)
-        self.left_e_rec = extract_electrode_records(ea_left, self.mer_left, numpy_array)
+        rightNodes = []
+        leftNodes = []
+        for x in list(slicer.mrmlScene.GetNodes()):
+            if isinstance(x, slicer.vtkMRMLModelNode):
+                if x.GetName().startswith("right_"):
+                    rightNodes.append(x)
+                elif x.GetName().startswith("left_"):
+                    leftNodes.append(x)
+        tr_right = slicer.util.getNode("right_shift")
+        for node in rightNodes:
+            if node.GetTransformNodeID() is None:
+                node.SetAndObserveTransformNodeID(tr_right.GetID())
+            else:
+                node.SetAndObserveTransformNodeID(None)
 
-        logic = LeadORLogic()
-        i = 0
-        for el_name, records in self.right_e_rec.items():
-            print(records)
-            logic.setUpTrajectory(i, getattr(ea_right, el_name), records, True, "right_" + el_name, 1, 1, 1)
-
-        for el_name, records in self.left_e_rec.items():
-            print(records)
-            logic.setUpTrajectory(i, getattr(ea_left, el_name), records, True, "left_" + el_name, 1, 1, 1)
-
-        # mirror right pts
-        records_right = {}
-        for key, val in self.right_e_rec.items():
-            records_right[key] = []
-            for rec in val:
-                records_right[key].append(ElectrodeRecord(rec.location * [-1, 1, 1], rec.record, 0))
-
-        self.right_shift = compute_transformation_from_signal(records_right, self.pts_right,
-                                                              self.mer_transforms['min_max_p'],
-                                                              self.mer_transforms['pipe'], self.net_shift)
-        self.left_shift = compute_transformation_from_signal(self.left_e_rec, self.pts_left,
-                                                             self.mer_transforms['min_max_p'],
-                                                             self.mer_transforms['pipe'], self.net_shift)
-        records_right = clasify_mers(records_right, self.mer_classification_net)
-        for key, val in records_right.items():
-            for rec in val:
-                rec.location = rec.location * [-1, 1, 1]
-        self.right_e_rec = records_right
-        self.left_e_rec = clasify_mers(self.left_e_rec, self.mer_classification_net)
+        tr_left = slicer.util.getNode("left_shift")
+        for node in leftNodes:
+            if node.GetTransformNodeID() is None:
+                node.SetAndObserveTransformNodeID(tr_left.GetID())
+            else:
+                node.SetAndObserveTransformNodeID(None)
 
     def on_calculate_shift(self):
 
-        # compute left shift
-        mesh = read_mesh(self.resourcePath('nets/3.obj'))
-        mesh = change_mesh(mesh, self.pts_left)
-
-        left_list = []
-        for key, val in self.left_e_rec.items():
-            for rec in val:
-                left_list.append(ElectrodeRecord(rec.location, rec.record, rec.label))
-        left_shift = optimise_mer_signal(left_list, self.left_shift, mesh)
-
-        right_list = []
-        for key, val in self.right_e_rec.items():
-            for rec in val:
-                right_list.append(ElectrodeRecord(rec.location * [-1, 1, 1], rec.record, rec.label))
-
-        mesh = change_mesh(mesh, self.pts_right)
-        # compute right shift
-        right_shift = optimise_mer_signal(right_list, self.left_shift, mesh)
-        right_shift = right_shift * [-1, 1, 1]
-
-        generate_transformation_from_shift(left_shift, "left_shift")
-        generate_transformation_from_shift(right_shift, "right_shift")
-
+        self.logic.shift_estimation(self.left_e_rec, self.right_e_rec, self.pts_left, self.pts_right)
         pass
 
 
@@ -951,12 +819,12 @@ def compute_transformation_from_signal(records,
 
     """
     transl_scaller = MinMaxScaler().fit([[-10, -10, -10], [10, 10, 10]])  # config tesy
-    m2 = np.reshape(mesh_pts,(-1,1))
+    m2 = np.reshape(mesh_pts, (-1, 1))
     m2 = m2.reshape(-1).tolist()
 
-    #print(m2.shape, m2)
+    # print(m2.shape, m2)
     pcas = transformer.transform([m2])
-    #print()
+    # print()
     flat_list = [item for sublist in records.values() for item in sublist]
     x, _ = ElectrodeRecord.electrode_list_to_array(flat_list)
 
@@ -984,6 +852,7 @@ def generate_transformation_from_shift(shift, name):
     transformNode.SetName(name)
     transformNode.SetAndObserveMatrixTransformToParent(matrix)
     slicer.mrmlScene.AddNode(transformNode)
+    return transformNode
 
 
 def slicer_transform_electrode(side):
@@ -1020,8 +889,10 @@ def loadNiiImage(file_path):
 #
 # load_niftyLogic
 #
+MESH_results = Tuple[vtkMRMLModelNode, np.ndarray]
 
-class load_niftyLogic(ScriptedLoadableModuleLogic):
+
+class MRI_MERLogic(ScriptedLoadableModuleLogic):
     """This class should implement all the actual
     computation done by your module.  The interface
     should be such that other python code can import
@@ -1035,7 +906,50 @@ class load_niftyLogic(ScriptedLoadableModuleLogic):
         """
         Called when the logic class is instantiated. Can be used for initializing member variables.
         """
+        try:
+            import torch
+        except:
+            slicer.util.pip_install('torch')
+            import torch
         ScriptedLoadableModuleLogic.__init__(self)
+        self.cent_det_hist = _read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
+
+        self.det_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/detect_mask.pkl'))
+        self.processing_folder = None
+        self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
+        net = CenterDetector().to('cpu')
+        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('cpu'))
+        net.load_state_dict(cd_state_dict)
+        self.center_detector = net
+
+        self.shape_pca_res = _read_pickle(self.resourcePath('nets/shape_pcas.pkl'))
+
+        self.shape_label_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/stn_shape_mask.pkl'))
+
+        # load segmentation model
+        self.shape_histogram = _read_pickle(self.resourcePath('nets/shape_hist.pkl'))
+        net = CenterAndPCANet(self.shape_pca_res[1])
+        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
+        net.load_state_dict(cd_state_dict)
+        self.shape_predictor = net
+
+        self.net_shift = TransformerShiftPredictor(4, 32, 1, 1, 10)
+        cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
+        self.net_shift.load_state_dict(cd_state_dict)
+
+        self.mer_transforms = _read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
+
+        self.mer_classification_net = TransformerClassifier(4, 64, 1, 1)
+        cd_state_dict = torch.load(self.resourcePath('nets/transformer_classifier.pt'),
+                                   map_location=torch.device('cpu'))
+        self.mer_classification_net.load_state_dict(cd_state_dict)
+
+    def resourcePath(self, relativePath):
+        """
+        Get the absolute path to the module resource
+        """
+        # print("pt1", os.path.dirname(__file__))
+        return os.path.normpath(os.path.join(os.path.dirname(__file__), "Resources", relativePath))
 
     def getParameterNode(self):
         return load_niftyParameterNode(super().getParameterNode())
@@ -1078,6 +992,258 @@ class load_niftyLogic(ScriptedLoadableModuleLogic):
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime - startTime:.2f} seconds')
 
+    def brain_extraction(self, t1: vtkMRMLVolumeArchetypeStorageNode) -> None:
+        image_name = t1.GetFileName()
+
+        print("FINISHED EXTRACTOR")
+        mask_filename = str(Path(image_name).parent / "t1_mask.nii.gz")
+
+        cmd = sys.executable + " "
+        cmd += self.resourcePath("py/bet.py") + " "
+        cmd += str(image_name) + " " + mask_filename
+        subprocess.call(cmd, shell=True)
+
+    def coregistration_t2_t1(self, t1: vtkMRMLVolumeArchetypeStorageNode, t2: vtkMRMLVolumeArchetypeStorageNode,
+                             out_name: str) -> None:
+
+        out_folder = str(Path(out_name).parent)
+        t1_path = t1.GetFileName()
+        t2_path = t2.GetFileName()
+        slicer_preprocessing.elastix_registration(
+            ref_image=t1_path,
+            flo_image=t2_path,
+            elastix_parameters=self.resourcePath('elastix/rigid_mri.txt'),
+            out_folder=out_folder)
+        ((Path(out_folder) / "result.0.nii.gz")
+         .rename((out_name)))
+
+    def intensity_normalisation(self, out_folder: str) -> None:
+        slicer_preprocessing.intensity_normalisation(out_folder)
+
+    def two_step_coregistration(self, node_to_transform, workdir: str) -> vtkMRMLTransformNode:
+        mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
+        elastix_affine = self.resourcePath('elastix/affine_mri.txt')
+        struct_image = str(Path(workdir) / "t1.nii.gz")
+        slicer_preprocessing.elastix_registration(ref_image=mni,
+                                                  flo_image=struct_image,
+                                                  elastix_parameters=elastix_affine,
+                                                  out_folder=workdir)
+        tfm_file = Path(workdir) / "TransformParameters.0.tfm"
+        transfortm_node = slicer.util.loadTransform(tfm_file)
+
+        node_to_transform.SetAndObserveTransformNodeID(transfortm_node.GetID())
+        node_to_transform.HardenTransform()
+        return transfortm_node
+
+    def on_chage_load_image(self, key, newvalue, dirname):
+        x = None
+        try:
+            x = getattr(self, key)
+            # print(1)
+        except:
+            # print(1.1)
+            pass
+        if x is not None:
+            if x == newvalue:
+                return
+
+        if not hasattr(self, key):
+            #            print(newvalue)
+            setattr(self, key, newvalue)
+        else:
+            print(1)
+        print("xxx ", self.processing_folder)
+        print(newvalue)
+        print('I am loading ', newvalue, " to ", key)
+        print(Path(dirname) / (key + ".nii.gz"))
+        shutil.copy(
+            Path(str(self.processing_folder / newvalue)),
+            Path(dirname) / (key + ".nii.gz")
+        )
+
+        try:
+            node = slicer.util.getNode(key)
+            slicer.mrmlScene.RemoveNode(node)
+
+            # node is found
+        except:  # node not found
+            pass  # todo change this method to get t2
+        node = loadNiiImage(Path(dirname) / (key + ".nii.gz"))
+        node.SetName(key)
+
+    def segment_side(self, t2, center_pred_point, image_coords, mirror=False):
+        # load mesh
+        mesh = read_mesh(self.resourcePath('nets/3.obj'))
+        mm_offset = 2
+        # t2 = slicer.util.getNode("t2_normalised")
+        image_processor = SlicerImage(t2.GetImageData())
+
+        transform_ras_to_ijk = vtk.vtkMatrix4x4()
+        t2.GetIJKToRASMatrix(transform_ras_to_ijk)
+        transform_ras_to_ijk.Invert()
+
+        shape_im = compute_image_at_pts(image_processor, image_coords, transform_ras_to_ijk,
+                                        (self.shape_label_mask.n_x,
+                                         self.shape_label_mask.n_y, self.shape_label_mask.n_z))
+        shape_im = self.shape_histogram.apply_normalization(shape_im)
+        shape_im = convert_to_tensor(shape_im)
+
+        print("segm start")
+        out_pcas = self.shape_predictor(shape_im, False)
+        print("segm finished")
+        off_cent, result_center = compute_center_offset(center_pred_point, out_pcas, mm_offset)
+        shape = compute_shape(self.shape_pca_res[0], out_pcas, result_center)
+
+        res_pts = shape
+
+        print(res_pts.shape, res_pts)
+        if mirror:
+            shape, result_center = apply_mirror(shape, result_center)
+
+        return change_mesh(mesh, shape), result_center, res_pts
+
+    def segmentSTNs(self, t2_node) -> Tuple[MESH_results, MESH_results]:
+        mm_offset = 2
+        print("Starting segmentation")
+
+        t2 = t2_node
+        image_processor = SlicerImage(t2.GetImageData())
+
+        transform_ras_to_ijk = vtk.vtkMatrix4x4()
+        t2.GetIJKToRASMatrix(transform_ras_to_ijk)
+
+        transform_ras_to_ijk.Invert()
+        a = image_processor.compute_image_at_mask(self.det_mask, transform_ras_to_ijk)
+        a = list(a)
+        a[0] = self.cent_det_hist.apply_normalization(a[0])
+        a[1] = self.cent_det_hist.apply_normalization(a[1])
+
+        try:
+            res_a0 = np.expand_dims(a[0], axis=0)
+            res_a0 = self.center_detector(torch.from_numpy(np.expand_dims(res_a0, axis=0)))
+            res_a1 = np.expand_dims(a[1], axis=0)
+            res_a1 = self.center_detector(torch.from_numpy(np.expand_dims(res_a1, axis=0)))
+
+            res_a0 = self.center_detector_scaller.inverse_transform(res_a0.detach().numpy())[0]
+            res_a1 = self.center_detector_scaller.inverse_transform(res_a1.detach().numpy())[0]
+            self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
+            self.center_orig.AddControlPointWorld(-1 * res_a0[0], res_a0[1], res_a0[2])
+            self.center_orig.AddControlPointWorld(res_a1[0], res_a1[1], res_a1[2])
+            # compute segmentation
+            image_coords_mirr = self.shape_label_mask.get_coords_list() + res_a0
+            image_coords_orig = self.shape_label_mask.get_coords_list() + res_a1
+            image_coords_mirr = image_coords_mirr * np.array([-1, 1, 1])
+
+            mesh_orig, cent_orig, pts_left = self.segment_side(t2, res_a1, image_coords_orig)
+            mesh_mirr, cent_mirr, pts_right = self.segment_side(t2, res_a0, image_coords_mirr, True)
+
+            print(cent_orig, cent_mirr)
+            cent_mirr = cent_mirr[0]
+            cent_orig = cent_orig[0]
+            self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
+            self.center_orig.AddControlPointWorld(cent_mirr[0], cent_mirr[1], cent_mirr[2])
+            self.center_orig.AddControlPointWorld(cent_orig[0], cent_orig[1], cent_orig[2])
+
+            mesh1 = display_mesh(mesh_orig, "Mesh left")
+            mesh2 = display_mesh(mesh_mirr, "Mesh right")
+
+            return (mesh1, pts_left), (mesh2, pts_right)
+
+        except Exception as e:
+            raise e
+
+    def process_mer_data(self, left_markups,
+                         right_markups,
+                         to_mni,
+                         mer_left_path,
+                         mer_right_path):
+
+        points_right = get_control_points(right_markups)
+        points_left = get_control_points(left_markups)
+
+        print(points_right)  # Print the positions of the control points for the right markups node
+        print(points_left)  # Print the positions of the control points for the left markups node
+
+        matrix = get_transform_matrix(transform_node=to_mni)
+        numpy_array = convert_to_numpy_array(matrix)
+
+        et_right = EntryTarget(Point.from_array(points_right[0]), Point.from_array(points_right[1]))
+        et_left = EntryTarget(Point.from_array(points_left[0]), Point.from_array(points_left[1]))
+
+        ea_left = apply_transformation(et_left, numpy_array)
+        ea_right = apply_transformation(et_right, numpy_array)
+
+        print(ea_right)  # Print the entry and target points for the right MER
+
+        mer_left = read_mer_data(mer_left_path, "*run-02*")
+        mer_right = read_mer_data(mer_right_path, "*run-01*")
+
+        mer_left = process_mer_data(mer_left)
+        mer_right = process_mer_data(mer_right)
+
+        right_e_rec = extract_electrode_records(ea_right, mer_right, numpy_array)
+        left_e_rec = extract_electrode_records(ea_left, mer_left, numpy_array)
+
+        logic = LeadORLogic()
+        i = 0
+        for el_name, records in right_e_rec.items():
+            print(records)
+            logic.setUpTrajectory(i, getattr(ea_right, el_name), records, True, "right_" + el_name, 1, 1, 1)
+
+        for el_name, records in left_e_rec.items():
+            print(records)
+            logic.setUpTrajectory(i, getattr(ea_left, el_name), records, True, "left_" + el_name, 1, 1, 1)
+
+        return left_e_rec, right_e_rec
+
+    def shift_estimation(self, left_e_rec, right_e_rec, left_mesh_pts, right_mesh_pts):
+
+        # mirror right pts
+        records_right = {}
+        for key, val in right_e_rec.items():
+            records_right[key] = []
+            for rec in val:
+                records_right[key].append(ElectrodeRecord(rec.location * [-1, 1, 1], rec.record, 0))
+
+        self.right_shift = compute_transformation_from_signal(records_right, right_mesh_pts,
+                                                              self.mer_transforms['min_max_p'],
+                                                              self.mer_transforms['pipe'], self.net_shift)
+        self.left_shift = compute_transformation_from_signal(left_e_rec, left_mesh_pts,
+                                                             self.mer_transforms['min_max_p'],
+                                                             self.mer_transforms['pipe'], self.net_shift)
+        records_right = clasify_mers(records_right, self.mer_classification_net)
+        for key, val in records_right.items():
+            for rec in val:
+                rec.location = rec.location * [-1, 1, 1]
+        right_e_rec = records_right
+        left_e_rec = clasify_mers(left_e_rec, self.mer_classification_net)
+
+        ###REFINE SHIFT ESTIMATION
+        # compute left shift
+        mesh = read_mesh(self.resourcePath('nets/3.obj'))
+        mesh = change_mesh(mesh, left_mesh_pts)
+
+        left_list = []
+        for key, val in left_e_rec.items():
+            for rec in val:
+                left_list.append(ElectrodeRecord(rec.location, rec.record, rec.label))
+        left_shift = optimise_mer_signal(left_list, self.left_shift, mesh)
+
+        right_list = []
+        for key, val in right_e_rec.items():
+            for rec in val:
+                right_list.append(ElectrodeRecord(rec.location * [-1, 1, 1], rec.record, rec.label))
+
+        mesh = change_mesh(mesh, right_mesh_pts)
+        # compute right shift
+        right_shift = optimise_mer_signal(right_list, self.left_shift, mesh)
+        right_shift = right_shift * [-1, 1, 1]
+
+        transform_node_left = generate_transformation_from_shift(left_shift, "left_shift")
+        transform_node_right = generate_transformation_from_shift(right_shift, "right_shift")
+        return transform_node_left, transform_node_right
+        pass
+
 
 #
 # load_niftyTest
@@ -1093,13 +1259,66 @@ class load_niftyTest(ScriptedLoadableModuleTest):
     def setUp(self):
         """ Do whatever is needed to reset the state - typically a scene clear will be enough.
         """
+
+        self.logic = MRI_MERLogic()
+        self.temp_workdir = tempfile.TemporaryDirectory()
         slicer.mrmlScene.Clear()
 
     def runTest(self):
         """Run as few or as many tests as needed here.
         """
         self.setUp()
-        self.test_load_nifty1()
+        self.test_load_and_coreg_images()
+        self.test_bet()
+        self.test_on_wm_segmentation()
+        self.test_intensity_normalisation()
+        self.test_two_step_coregistration()
+        self.test_segmentation()
+        self.test_mer_loading()
+        self.test_mer_shift_estimation()
+        # self.test_load_nifty1()
+
+    def tearDown(self):
+        self.temp_workdir.cleanup()
+
+    def test_load_and_coreg_images(self):
+        """
+        Test the loading of images
+        """
+        # load images
+        path = Path(r"/home/varga/mounted_tuplak/processing_data/new_data_sorted/sub-P060")
+        self.logic.processing_folder = path
+        self.logic.on_chage_load_image("t1", "t1_precl_RAW.nii.gz", self.temp_workdir.name)
+        t1 = slicer.util.getNode("t1")
+
+        self.logic.on_chage_load_image("t2", "t2_precl_RAW.nii.gz", self.temp_workdir.name)
+        t2 = slicer.util.getNode("t2")
+
+        self.logic.coregistration_t2_t1(t1.GetStorageNode(), t2.GetStorageNode(),
+                                        self.temp_workdir.name + "/coreg_t2.nii.gz")
+
+    def test_two_step_coregistration(self):
+        t2_node = slicer.util.getNode("t2")
+        transform_node = self.logic.two_step_coregistration(t2_node, self.temp_workdir.name)
+        transform_node.SetName("to_mni")
+
+    def test_mer_loading(self):
+        # create markup node for the MER
+        right_markups = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
+        left_markups = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
+        # set points to markups
+        right_markups.AddControlPointWorld(-35.5, 82.28, 76.58)
+        right_markups.AddControlPointWorld(-15.09, 44.56, -2.32)
+        right_markups.SetName("right")
+        left_markups.AddControlPointWorld(82.27, 76.58, 4.95)
+        left_markups.AddControlPointWorld(4.95, 42.64, -1.34)
+        left_markups.SetName("left")
+        # load MER files
+        self.left_e_rec, self.right_e_rec = self.logic.process_mer_data(left_markups,
+                                                                        right_markups,
+                                                                        slicer.util.getNode('to_mni'),
+                                                                        r"/home/varga/mounted_tuplak/mer_data_processing/mer/sub-P060/ses-perisurg/ieeg/sub-P060_ses-perisurg_run-01_channels.tsv",
+                                                                        r"/home/varga/mounted_tuplak/mer_data_processing/mer/sub-P060/ses-perisurg/ieeg/sub-P060_ses-perisurg_run-01_channels.tsv")
 
     def test_load_nifty1(self):
         """ Ideally you should have several levels of tests.  At the lowest level
@@ -1131,7 +1350,7 @@ class load_niftyTest(ScriptedLoadableModuleTest):
 
         # Test the module logic
 
-        logic = load_niftyLogic()
+        logic = MRI_MERLogic()
 
         # Test algorithm with non-inverted threshold
         logic.process(inputVolume, outputVolume, threshold, True)
@@ -1144,5 +1363,36 @@ class load_niftyTest(ScriptedLoadableModuleTest):
         outputScalarRange = outputVolume.GetImageData().GetScalarRange()
         self.assertEqual(outputScalarRange[0], inputScalarRange[0])
         self.assertEqual(outputScalarRange[1], inputScalarRange[1])
-
         self.delayDisplay('Test passed')
+
+    def test_intensity_normalisation(self):
+        self.logic.intensity_normalisation(self.temp_workdir.name)
+        slicer.mrmlScene.RemoveNode(slicer.util.getNode('t2'))
+        t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t2_normalised.nii.gz"))
+        t2_node.SetName("t2")
+        pass
+
+    def test_on_wm_segmentation(self):
+        slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
+                                             out_folder=self.temp_workdir.name)
+        pass
+
+    def test_bet(self):
+        self.logic.brain_extraction(slicer.util.getNode('t1').GetStorageNode())
+        slicer.mrmlScene.RemoveNode(slicer.util.getNode('t1'))
+        t1_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t1.nii.gz"))
+        t1_node.SetName("t1")
+        pass
+
+    def test_segmentation(self):
+        print("Starting segmentation")
+        t2 = slicer.util.getNode("t2")
+
+        left, right = self.logic.segmentSTNs(t2)
+        self.pts_left = left[1]
+        self.pts_right = right[1]
+        pass
+
+    def test_mer_shift_estimation(self):
+        self.logic.shift_estimation(self.left_e_rec, self.right_e_rec, self.pts_left, self.pts_right)
+        pass

@@ -264,165 +264,17 @@
         </property>
        </widget>
       </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="ctkCollapsibleButton" name="imageRegistration" native="true">
-     <property name="text" stdset="0">
-      <string>Image Registration</string>
-     </property>
-     <layout class="QFormLayout" name="formLayout_4">
-      <item row="0" column="0">
-       <widget class="QLabel" name="label_2">
+      <item row="6" column="0" colspan="2">
+       <widget class="QPushButton" name="merApplyTransformation">
         <property name="text">
-         <string>Moving Image:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="qMRMLNodeComboBox" name="fix_im_registration" native="true">
-        <property name="toolTip">
-         <string>Pick the output to the algorithm.</string>
-        </property>
-        <property name="nodeTypes" stdset="0">
-         <stringlist notr="true">
-          <string>vtkMRMLScalarVolumeNode</string>
-         </stringlist>
-        </property>
-        <property name="showChildNodeTypes" stdset="0">
-         <bool>false</bool>
-        </property>
-        <property name="noneEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="addEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="removeEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>thresholdedVolume</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_5">
-        <property name="text">
-         <string>Reference Image:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="qMRMLNodeComboBox" name="reference_image_registrationVolumeSelector" native="true">
-        <property name="toolTip">
-         <string>Result with inverted threshold will be written into this volume</string>
-        </property>
-        <property name="nodeTypes" stdset="0">
-         <stringlist notr="true">
-          <string>vtkMRMLScalarVolumeNode</string>
-         </stringlist>
-        </property>
-        <property name="showChildNodeTypes" stdset="0">
-         <bool>false</bool>
-        </property>
-        <property name="noneEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="addEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="removeEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>invertedVolume</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="label_5">
-        <property name="text">
-         <string>Output volume:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="qMRMLNodeComboBox" name="invertedOutputSelector">
-        <property name="toolTip">
-         <string>Result with inverted threshold will be written into this volume</string>
-        </property>
-        <property name="nodeTypes" stdset="0">
-         <stringlist notr="true">
-          <string>vtkMRMLMarkupsFiducialNode</string>
-         </stringlist>
-        </property>
-        <property name="showChildNodeTypes" stdset="0">
-         <bool>false</bool>
-        </property>
-        <property name="noneEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="addEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="removeEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>invertedVolume</string>
+         <string>Apply Transformation</string>
         </property>
        </widget>
       </item>
      </layout>
     </widget>
    </item>
-   <item>
-    <widget class="ctkCollapsibleButton" name="advancedCollapsibleButton" native="true">
-     <property name="text" stdset="0">
-      <string>Advanced</string>
-     </property>
-     <property name="collapsed" stdset="0">
-      <bool>true</bool>
-     </property>
-     <layout class="QFormLayout" name="formLayout_3">
-      <item row="0" column="0">
-       <widget class="QLabel" name="label_4">
-        <property name="text">
-         <string>Invert threshold: </string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QCheckBox" name="invertOutputCheckBox">
-        <property name="toolTip">
-         <string>If checked, values above threshold are set to 0. If unchecked, values below are set to 0.</string>
-        </property>
-        <property name="text">
-         <string/>
-        </property>
-        <property name="invertThreshold" stdset="0">
-         <string/>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QPushButton" name="applyButton">
-     <property name="enabled">
-      <bool>false</bool>
-     </property>
-     <property name="toolTip">
-      <string>Run the algorithm.</string>
-     </property>
-     <property name="text">
-      <string>Apply</string>
-     </property>
-    </widget>
-   </item>
+
    <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
