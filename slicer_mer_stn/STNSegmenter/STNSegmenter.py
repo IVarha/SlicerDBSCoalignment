@@ -124,7 +124,7 @@ class STNSegmenter(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = _("STNSegmenter")  # TODO: make this more human readable by adding spaces
         # TODO: set categories (folders where the module shows up in the module selector)
-        self.parent.categories = [translate("qSlicerAbstractCoreModule", "Examples")]
+        self.parent.categories = [translate("qSlicerAbstractCoreModule", "DBS")]
         self.parent.dependencies = []  # TODO: add here list of module names that this module requires
         self.parent.contributors = [
             "John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
@@ -293,7 +293,9 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if storageNode is None:  # save node to temp folder and return storage node for it
             slicer.util.saveNode(node, str(Path(self.temp_workdir.name) / f"{node.GetName()}.nii.gz"))
             return node.GetStorageNode()
-
+        elif not storageNode.GetFileName().endswith(".nii.gz"):
+            slicer.util.saveNode(node, str(Path(self.temp_workdir.name) / f"{node.GetName()}.nii.gz"))
+            return node.GetStorageNode()
         return storageNode
 
     def onApplyPreprocessing(self) -> None:
@@ -549,13 +551,19 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
     def brain_extraction(self, t1: vtkMRMLVolumeArchetypeStorageNode, temp_dir_path) -> None:
         image_name = t1.GetFileName()
 
-        print("FINISHED EXTRACTOR")
+        img = ants.image_read(image_name)
+
+        mask  = antspynet.brain_extraction(img,"t1") > 0.8
+
 
         mask_filename = str(Path(temp_dir_path) / "t1_mask.nii.gz")
-
-        cmd = [sys.executable, self.resourcePath("py/bet.py"), str(image_name), mask_filename, str(Path(temp_dir_path) / "t1.nii.gz")]
-        print(cmd)
-        subprocess.call(cmd, shell=True)
+        masked_image = img * mask
+        ants.image_write(mask, mask_filename)
+        ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
+        print("FINISHED EXTRACTOR")
+        #cmd = [sys.executable, self.resourcePath("py/bet.py"), str(image_name), mask_filename, str(Path(temp_dir_path) / "t1.nii.gz")]
+        #print(cmd)
+        #subprocess.call(cmd, shell=True)
 
     def coregistration_t2_t1(self, t1: vtkMRMLVolumeArchetypeStorageNode, t2: vtkMRMLVolumeArchetypeStorageNode,
                              out_name: str) -> None:

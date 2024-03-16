@@ -1,51 +1,72 @@
 import logging
+
+import pandas as pd
+import slicer
+
 import os
 import pickle
 import shutil
 import subprocess
-from typing import Annotated, Optional, Tuple
 import sys
+import tempfile
+from pathlib import Path
+from typing import Annotated, Optional, Tuple, List
+
+try:
+    import fsl.data.image as fim
+except ImportError:
+    slicer.util.pip_install('fslpy')
+    import fsl.data.image as fim
+import fsl.transform.flirt as fl
+
+try:
+    import mer_lib.artefact_detection as ad
+except ImportError:
+    slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\MER_lib')
+    import mer_lib.artefact_detection as ad
+
+import mer_lib.feature_extraction as fe
+import mer_lib.processor as proc
 import numpy as np
 import qt
-from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLModelNode, vtkMRMLTransformNode
-
-from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, ElectrodeArray, \
-    optimisation_criterion, clasify_mers
-from Lib.visualisiation import LeadORLogic
 import vtk
-import tempfile
-import slicer
+
+try:
+    import torch
+except ImportError:
+    slicer.util.pip_install('torch')
+    import torch
+try:
+    import intensity_normalization as inorm
+except ImportError:
+    slicer.util.pip_install('intensity-normalization')
+    import intensity_normalization as inorm
+
+from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLModelNode, vtkMRMLTransformNode, vtkMRMLTextNode, \
+    vtkMRMLSubjectHierarchyNode, vtkMRMLLinearTransformNode
+
+try:
+    from dbs_image_utils.mask import SubcorticalMask
+except ImportError:
+    slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\dbs_pure_lib')
+    from dbs_image_utils.mask import SubcorticalMask
+from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerShiftPredictor, TransformerClassifier
+from mer_lib.data import MER_data
 from sklearn.preprocessing import MinMaxScaler
+from slicer import vtkMRMLScalarVolumeNode
 from slicer.ScriptedLoadableModule import *
-from slicer.util import VTKObservationMixin
 from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
     WithinRange,
 )
-from mer_lib.data import MER_data
-import nibabel as nib
-from brainextractor import BrainExtractor
-import fsl.data.image as fim
-import fsl.transform.flirt as fl
-from pathlib import Path
+from slicer.util import VTKObservationMixin
+
 from Lib import slicer_preprocessing
 from Lib.image_utils import SlicerImage
+from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, optimisation_criterion, \
+    clasify_mers, extract_points_from_mesh
 from Lib.utils_file import get_images_in_folder
-from slicer import vtkMRMLScalarVolumeNode
-from dbs_image_utils.mask import SubcorticalMask
-import sitkUtils
-from dbs_image_utils.histogram_standartisation import HistogramStandartisation
-from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerShiftPredictor, TransformerClassifier
-import mer_lib.processor as proc
-import mer_lib.artefact_detection as ad
-import mer_lib.feature_extraction as fe
-import mer_lib.data as mer_dat
-
-
-def _compute_min_max_scaler(pt_min, pt_max):
-    a = MinMaxScaler()
-    a.fit([pt_min, pt_max])
-    return a
+from Lib.visualisiation import LeadORLogic
 
 
 def nrms_normalisation(data: MER_data):
@@ -177,22 +198,18 @@ def read_mesh(file_name):
     return mesh
 
 
-def optimise_mer_signal(mer_data, origin_shift: np.ndarray, mesh):
+def optimise_mer_signal(mer_data: torch.Tensor, origin_shift: torch.Tensor, mesh, classes: torch.Tensor):
     """
     optimise the signal of the mer data to get the best overlap with the mesh
-    input: mer_data: List[ElectrodeRecord]
+    input: mer_data: torch tensor unscalled mer data
+    classes: classified signals (same length as mer_data)
 
     """
     # convert mer_data to torch tensor
-    x, mer_label = ElectrodeRecord.electrode_list_to_array(mer_data)
 
-    mer_data = torch.from_numpy(x).type(torch.float32)
+    optimise_f = lambda x: optimisation_criterion(mer_data, classes, shift=x, mesh=mesh) + torch.linalg.norm(x)
 
-    mer_label = torch.from_numpy(mer_label).type(torch.int)
-
-    optimise_f = lambda x: optimisation_criterion(mer_data, mer_label, shift=x, mesh=mesh) + torch.linalg.norm(x)
-
-    x = torch.from_numpy(origin_shift).requires_grad_(True)
+    x = origin_shift.clone().detach().requires_grad_(True)
 
     print("Origin estimated value of shift:", x)
     print("Origin estimated value of the function:", optimise_f(x).item())
@@ -227,7 +244,7 @@ class load_nifty(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "DBS Subcortical electrode localisation"  # TODO: make this more human readable by adding spaces
         self.parent.categories = [
-            "Examples"]  # TODO: set categories (folders where the module shows up in the module selector)
+            "DBS"]  # TODO: set categories (folders where the module shows up in the module selector)
         self.parent.dependencies = []  # TODO: add here list of module names that this module requires
         self.parent.contributors = [
             "John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
@@ -469,6 +486,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
         self.logic: MRI_MERLogic = MRI_MERLogic()
+        print("MER logic created")
         self._create_temp_folder()
         # Connections
 
@@ -476,20 +494,11 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
-        self.ui.t2InputSelector.connect('textActivated(QString)',
-                                        lambda x: self.logic.on_chage_load_image("t2", x, self.temp_workdir.name))
-        self.ui.structuralInputSelector.connect('textActivated(QString)',
-                                                lambda x: self.logic.on_chage_load_image("t1", x,
-                                                                                         self.temp_workdir.name))
         # Buttons
         # self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
-        self.ui.preprocessingButton.clicked.connect(self.onApplyPreprocessing)
-        self.ui.betButton.clicked.connect(self.brain_extraction)
-        self.ui.wmSegmentationButton.clicked.connect(self.onApplyWMSeg)
-        self.ui.wmIntensityNormButton.clicked.connect(self.onApplyIntensity)
-        self.ui.twoStepCoregistrationButton.clicked.connect(self.onTwoStepCoregistration)
-        self.ui.segmentationButton.clicked.connect(self.onSegmentationButtonClicked)
-        self.ui.inputPathSelector.connect('currentPathChanged(QString)', self.onInputFolderSelect)
+        self.ui.stn_inputSelector.currentNodeChanged.connect(self.onInputMeshSelected)
+        self.ui.textinputSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.onInputTextSelected)
+        self.ui.transform_inputSelector.currentNodeChanged.connect(self.onInputTransformSelected)
         self.ui.merButton.clicked.connect(self.onMerRunButtonClicked)
         self.ui.merFinalButton.clicked.connect(self.on_calculate_shift)
         self.ui.merApplyTransformation.clicked.connect(self.apply_transformation_mer)
@@ -501,29 +510,6 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # self.lead_or_bind()
         # initialise variables
-        print(self.resourcePath('nets/cent_detect_hist.pkl'))
-        self.cent_det_hist = _read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
-
-        self.det_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/detect_mask.pkl'))
-        print(self.det_mask.get_coords_3d()[self.det_mask.n_x // 2, self.det_mask.n_y // 2, self.det_mask.n_z // 2, :])
-
-        # load center detector
-        self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
-        net = CenterDetector().to('cpu')
-        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('cpu'))
-        net.load_state_dict(cd_state_dict)
-        self.center_detector = net
-
-        self.shape_pca_res = _read_pickle(self.resourcePath('nets/shape_pcas.pkl'))
-
-        self.shape_label_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/stn_shape_mask.pkl'))
-
-        # load segmentation model
-        self.shape_histogram = _read_pickle(self.resourcePath('nets/shape_hist.pkl'))
-        net = CenterAndPCANet(self.shape_pca_res[1])
-        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
-        net.load_state_dict(cd_state_dict)
-        self.shape_predictor = net
 
         self.net_shift = TransformerShiftPredictor(4, 32, 1, 1, 10)
         cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
@@ -536,40 +522,68 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                    map_location=torch.device('cpu'))
         self.mer_classification_net.load_state_dict(cd_state_dict)
 
-    def on_chage_load_image(self, key, newvalue):
-        x = None
-        try:
-            x = getattr(self, key)
-            # print(1)
-        except:
-            # print(1.1)
-            pass
-        if x is not None:
-            if x == newvalue:
-                return
+    def onInputTransformSelected(self, node: vtkMRMLTransformNode):
+        self.to_mni = node
 
-        if not hasattr(self, key):
-            #            print(newvalue)
-            setattr(self, key, newvalue)
+    def onInputTextSelected(self, node: vtkMRMLTextNode):
+        self.text = node
+        #
+        ### add event when the text is changed
+        self.text.AddObserver(vtk.vtkCommand.ModifiedEvent, self.onTextModified)
+
+    def onTextModified(self, node, event):
+        df_text = self.logic.read_leadOR_txt(node)
+        # compute the NRMS
+
+        df_text = df_text.drop_duplicates(subset=["RecordingSiteDTT"])
+        df_text = self.logic.nrms_df_calculation(df_text)
+        # scale rms to [0,1]
+        df_text = self.logic.nrms_min_max_scale(df_text)
+        # compute tensor from the dataframe
+        result_tensor = self.logic.df_to_electrode_records_tensor(df_text, to_mni_transform=self.to_mni,
+                                                                  require_mirror=self.side)
+        # clone the tensor
+        unscalled_tensor = result_tensor.clone()
+
+        # rescale the tensor
+
+        result_tensor[:, :3] = ((result_tensor[:, :3] - self.mer_transforms['min_max_p'][0])
+                                / (self.mer_transforms['min_max_p'][1] - self.mer_transforms['min_max_p'][0]))
+
+        # compute the shift
+        shift = self.logic.predict_initial_shift(result_tensor, self.pcas)
+        print(shift * 20 - 10)
+
+        # refine shift
+
+        shift = self.logic.predict_shift(unscalled_tensor, shift, self.mesh_copy)
+        print(shift)
+        # create new shift
+
+    def check_side(self, bds):
+        if bds[0] < 0:
+            return True
         else:
-            print(1)
+            return False
 
-        print('I am loading ', newvalue, " to ", key)
-        print(Path(str(self.temp_workdir.name)) / (key + ".nii.gz"))
-        shutil.copy(
-            Path(str(self.processing_folder / newvalue)),
-            Path(str(self.temp_workdir.name)) / (key + ".nii.gz")
-        )
+    def onInputMeshSelected(self, node: vtkMRMLModelNode):
+        self.mesh1 = node
+        # get cells bounds from node
+        bds = [0] * 6
+        node.GetBounds(bds)
+        # check if the mesh is on the right or left side
+        self.side = self.check_side(bds)
 
-        try:
-            node = slicer.util.getNode(key)
-            slicer.mrmlScene.RemoveNode(node)
+        # get pcas from the mesh
+        self.pcas, mesh_points = self.logic.get_pcas_from_mesh(node, self.side)
 
-            # node is found
-        except:  # node not found
-            pass  # todo change this method to get t2
-        node = loadNiiImage(str(self.processing_folder / newvalue))
-        node.SetName(key)
+        # create mesh copy
+        mesh_copy = self.logic.create_mesh_copy(node)
+        # change points of the mesh
+        if self.side:
+            mesh_copy = change_mesh(mesh_copy, mesh_points)
+        self.mesh_copy = mesh_copy
+        print(self.pcas)
 
     def cleanup(self) -> None:
         """
@@ -624,7 +638,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Parameter node stores all user choices in parameter values, node selections, etc.
         # so that when the scene is saved and reloaded, these settings are restored.
 
-        self.setParameterNode(self.logic.getParameterNode())
+        # self.setParameterNode(self.logic.getParameterNode())
 
         # Select default input nodes if nothing is selected yet to save a few clicks for the user
         # if not self._parameterNode.inputVolume:
@@ -647,26 +661,6 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.applyButton.toolTip = "Select input and output volume nodes"
             self.ui.applyButton.enabled = False
 
-    def onApplyPreprocessing(self) -> None:
-        print("start on appl")
-
-        self.t1_node = slicer.util.getNode('t1')
-
-        self.t2_node = slicer.util.getNode('t2')
-        self.logic.coregistration_t2_t1(self.t1_node.GetStorageNode()
-                                        , t2=self.t2_node.GetStorageNode(),
-                                        out_name=str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
-
-        self.popup_window()
-        print("fin on appl")
-
-    def onApplyWMSeg(self) -> None:
-        print("start on onApplyWMSeg")
-        slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
-                                             out_folder=self.temp_workdir.name)
-        self.wm_seg_done = True
-        print("fin on appl")
-
     def popup_window(self):
         message_box = qt.QMessageBox()
 
@@ -683,28 +677,6 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Show the message box as a modal dialog
         message_box.exec_()
 
-    def onApplyIntensity(self):
-        print("test onApplyIntensity")
-        # slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
-        if self.wm_seg_done:
-            self.logic.intensity_normalisation(self.temp_workdir.name)
-            self.intensity_normalisation_done = True
-            self.t2_node = slicer.util.getNode('t2')
-            slicer.mrmlScene.RemoveNode(self.t2_node)
-            t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t2_normalised.nii.gz"))
-            t2_node.SetName("t2")
-            self.t2_node = t2_node
-
-            pass
-        self.popup_window()
-
-    def onTwoStepCoregistration(self):
-        print("test onTwoStepCoregustration")
-        t2_image = slicer.util.getNode("t2")
-
-        self.transform_node = self.logic.two_step_coregistration(t2_image, self.temp_workdir.name)
-        self.transform_node.SetName("to_mni")
-
     def onApplyButton(self) -> None:
         """
         Run processing when user clicks "Apply" button.
@@ -720,52 +692,6 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.logic.process(self.ui.inputSelector.currentNode(), self.ui.invertedOutputSelector.currentNode(),
                                    self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked,
                                    showResult=False)
-
-    def onInputFolderSelect(self, new_path) -> None:
-        """
-        run when input folder selected
-        """
-        print("new_path", new_path)
-        with slicer.util.tryWithErrorDisplay("Failed to compute results.", waitCursor=True):
-            self.processing_folder = Path(new_path)
-            self.logic.processing_folder = self.processing_folder
-            ###load folder]
-            images = get_images_in_folder(new_path)
-            self.ui.structuralInputSelector.clear()
-            self.ui.structuralInputSelector.addItems(images)
-            # for i in images
-
-            self.ui.t2InputSelector.clear()
-            self.ui.t2InputSelector.addItems(images)
-
-            #### load
-            pass
-
-    def apply_normalization(self, shape_im):
-        shape_im = self.shape_histogram.apply_normalization(shape_im)
-        return shape_im
-
-    def brain_extraction(self):
-
-        self.logic.brain_extraction(self.t1_node.GetStorageNode())
-
-        self.t1_node = slicer.util.getNode('t1')
-        slicer.mrmlScene.RemoveNode(self.t1_node)
-        t1_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t1.nii.gz"))
-        self.t1_node = t1_node
-        t1_node.SetName("t1")
-        # t2_node.setName("t2_normalised")
-
-        pass
-
-    def onSegmentationButtonClicked(self):
-        mm_offset = 2
-        print("Starting segmentation")
-        t2 = slicer.util.getNode("t2")
-
-        left, right = self.logic.segmentSTNs(t2)
-        self.pts_left = left[1]
-        self.pts_right = right[1]
 
     def onMerRunButtonClicked(self):
         """
@@ -805,9 +731,131 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             else:
                 node.SetAndObserveTransformNodeID(None)
 
-    def on_calculate_shift(self):
 
-        self.logic.shift_estimation(self.left_e_rec, self.right_e_rec, self.pts_left, self.pts_right)
+    def _test_copytransform(self):
+        sh = slicer.mrmlScene.GetSubjectHierarchyNode()
+        sceneId = sh.GetSceneItemID()
+        fold1 = sh.CreateFolderItem(sceneId, "folder1")
+        #create a transform node
+        transformNode = slicer.vtkMRMLLinearTransformNode()
+        slicer.mrmlScene.AddNode(transformNode)
+        transformNode.SetName("transform1")
+        sh.SetItemParent(sh.GetItemByDataNode(transformNode), fold1)
+        #create 2nd folder
+        fold2 = sh.CreateFolderItem(sceneId, "folder2")
+
+        # copy the transform node
+        cp_transf = slicer.mrmlScene.CopyNode(transformNode)
+
+        dtt_id = sh.GetItemByDataNode(cp_transf)
+        sh.SetItemParent(dtt_id, fold2)
+
+
+
+
+
+    def _copy_leadORIGTL_folder(self):
+        """
+        Copy the LeadORIGTL folder to the temporary working directory.
+        """
+        sh = slicer.mrmlScene.GetSubjectHierarchyNode()
+
+        transformNode = vtkMRMLLinearTransformNode()
+        slicer.mrmlScene.AddNode(transformNode)
+        transformNode.Copy(slicer.util.getNode("LeadOR:DTT"))
+        transformNode.SetName("DBS DTT")
+
+        #CREATE FOLDER FOR THE NEW TRANSFORM
+        sceneId = sh.GetSceneItemID()
+        fold1 = sh.CreateFolderItem(sceneId, "DBS-Transforms")
+        dtt_id = sh.GetItemByDataNode(transformNode)
+        sh.SetItemParent(dtt_id, fold1)
+
+    def _remove_all_previous_copies(self):
+        sh = slicer.mrmlScene.GetSubjectHierarchyNode()
+        sceneId = sh.GetSceneItemID()
+        child_tmp = []
+        sh.GetItemChildren(sceneId, child_tmp)
+        for id in child_tmp:
+
+            if sh.GetItemLevel(id) == 'Folder':
+                print("Folder", sh.GetItemName(id))
+                name = sh.GetItemName(id)
+                if name.startswith("DBS-T"):
+                    sh.RemoveItem(id)
+
+
+
+    def on_calculate_shift(self):
+        sh : vtkMRMLSubjectHierarchyNode= slicer.mrmlScene.GetSubjectHierarchyNode()
+        self._remove_all_previous_copies()
+        self._copy_leadORIGTL_folder()
+
+        sceneId = sh.GetSceneItemID()
+
+        # get all children of sc
+        child_tmp =[]
+        sh.GetItemChildren(sceneId, child_tmp)
+        print(child_tmp)
+        for id in child_tmp:
+            # check if is folder
+            if sh.GetItemLevel(id) == 'Folder':
+                print(sh.GetItemName(id))
+                name = sh.GetItemName(id)
+                if name.startswith("LeadOR T"):
+                    print("Creating a folder for",name)
+                    result_name= name.split("LeadOR ")[-1]
+
+                    # create a copy of a folder and add it to the scene
+                    new_id = sh.CreateFolderItem(sceneId, "DBS "+ result_name)
+
+                    # copy all children of origin folder to the new folder
+                    child_tmp2 =[]
+                    sh.GetItemChildren(id, child_tmp2)
+                    #copy all children
+
+                    transform_id = None
+                    transformed_ids = []
+                    for id2 in child_tmp2:
+
+                        id2_name = sh.GetItemName(id2)
+                        id2_node = slicer.util.getNode(id2_name)
+
+                        clonedItemID = slicer.modules.subjecthierarchy.logic().CloneSubjectHierarchyItem(sh,
+                                                                                                         id2)
+                        clonedNode = sh.GetItemDataNode(clonedItemID)
+
+
+                        sh.SetItemParent(clonedItemID, new_id)
+                        clonedNode.SetName(id2_name)
+                        if clonedNode.IsA('vtkMRMLLinearTransformNode'):
+                            transform_id = clonedItemID
+                            print(111)
+                        if id2_node.IsA('vtkMRMLTransformableNode') and not id2_name.endswith("Tube Model") :
+                            print(id2)
+                            transform_node_tmp = id2_node.GetParentTransformNode()
+                            # If a transform node is found, add it to the list
+                            if transform_node_tmp:
+                                transformed_ids.append(clonedItemID)
+
+                                #print("Transform node found")
+                                #print(transform_node_tmp.GetName())
+
+                    #apply transform to copied nodes
+                    transform_node = sh.GetItemDataNode(transform_id)
+                    for id2 in transformed_ids:
+                        node = sh.GetItemDataNode(id2)
+                        node.SetAndObserveTransformNodeID(transform_node.GetID())
+                    # get original transform node
+                    tf = slicer.util.getNode("DBS DTT")
+                    transform_node.SetAndObserveTransformNodeID(tf.GetID())
+                    #
+                    break
+
+
+
+
+        #self.logic.shift_estimation(self.left_e_rec, self.right_e_rec, self.pts_left, self.pts_right)
         pass
 
 
@@ -860,25 +908,6 @@ def slicer_transform_electrode(side):
     transform = slicer.util.getNode(transform_name)
 
 
-def display_mesh(mesh, node_name):
-    modelNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
-    modelNode.SetAndObservePolyData(mesh)
-    modelNode.SetDisplayVisibility(True)
-    modelNode.SetName(node_name)
-
-    displayNode = modelNode.GetDisplayNode()
-    if displayNode is None:
-        displayNode = slicer.mrmlScene.CreateNodeByClass("vtkMRMLModelDisplayNode")
-        slicer.mrmlScene.AddNode(displayNode)
-        modelNode.SetAndObserveDisplayNodeID(displayNode.GetID())
-    displayNode.SetScalarVisibility(1)
-    displayNode.SetVisibility3D(1)
-    displayNode.SetVisibility2D(1)
-    displayNode.SetOpacity(0.3)
-    displayNode.Modified()
-    return modelNode
-
-
 def loadNiiImage(file_path):
     # Load an image and display it in Slicer
     image_node = slicer.util.loadVolume(file_path)
@@ -911,27 +940,12 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         except:
             slicer.util.pip_install('torch')
             import torch
+        try:
+            import torchio
+        except ImportError:
+            slicer.util.pip_install('torchio')
+            import torchio
         ScriptedLoadableModuleLogic.__init__(self)
-        self.cent_det_hist = _read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
-
-        self.det_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/detect_mask.pkl'))
-        self.processing_folder = None
-        self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
-        net = CenterDetector().to('cpu')
-        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('cpu'))
-        net.load_state_dict(cd_state_dict)
-        self.center_detector = net
-
-        self.shape_pca_res = _read_pickle(self.resourcePath('nets/shape_pcas.pkl'))
-
-        self.shape_label_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/stn_shape_mask.pkl'))
-
-        # load segmentation model
-        self.shape_histogram = _read_pickle(self.resourcePath('nets/shape_hist.pkl'))
-        net = CenterAndPCANet(self.shape_pca_res[1])
-        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
-        net.load_state_dict(cd_state_dict)
-        self.shape_predictor = net
 
         self.net_shift = TransformerShiftPredictor(4, 32, 1, 1, 10)
         cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
@@ -943,6 +957,82 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         cd_state_dict = torch.load(self.resourcePath('nets/transformer_classifier.pt'),
                                    map_location=torch.device('cpu'))
         self.mer_classification_net.load_state_dict(cd_state_dict)
+
+    def read_leadOR_txt(self, text_node: vtkMRMLTextNode):
+        """
+        Read the text node and return the content.
+        """
+        from io import StringIO
+        import pandas as pd
+        text = text_node.GetText()
+        iotext = StringIO(text)
+        df = pd.read_csv(iotext)
+        return df
+
+    def nrms_df_calculation(self, df: pd.DataFrame) -> pd.DataFrame:
+
+        # iterate through columns
+        cols = []
+        for col in df.columns:
+            if not col.endswith('XYZ') and col != 'RecordingSiteDTT':
+                cols.append(col)
+
+        # compute means
+        mean = df.iloc[:5][cols].mean()
+        # compute nrms
+        df[cols] = df[cols] / mean
+
+        return df
+
+    def nrms_min_max_scale(self, df: pd.DataFrame):
+        cols = []
+        for col in df.columns:
+            if not col.endswith('XYZ') and col != 'RecordingSiteDTT':
+                cols.append(col)
+
+        # compute min max
+        min_max = df[cols].min().values.min(), df[cols].max().values.max()
+        df[cols] = (df[cols] - min_max[0]) / (min_max[1] - min_max[0])
+        return df
+
+    def df_to_electrode_records_tensor(self, df: pd.DataFrame, to_mni_transform: vtkMRMLTransformNode,
+                                       require_mirror) -> torch.Tensor:
+        """
+        Convert a dataframe to a tensor of electrode records.
+        """
+        # Convert the dataframe to a tensor
+        cols = [col for col in df.columns if col.endswith('XYZ')]
+
+        to_mni = vtk.vtkMatrix4x4()
+        to_mni_transform.GetMatrixTransformToWorld(to_mni)
+
+        df[cols] = df[cols].applymap(lambda x: [float(a) for a in x.split(';')])
+        # apply the transformation to each cell of df[cols]
+        df[cols] = df[cols].applymap(lambda x: np.array(to_mni.MultiplyPoint(x + [1])[:3]))
+        if require_mirror:
+            df[cols] = df[cols].applymap(lambda x: x * np.array([-1, 1, 1]))
+        cols = [col for col in df.columns if (not col.endswith('XYZ')) and (col != 'RecordingSiteDTT')]
+
+        result_np = np.vstack(
+            [np.array([np.concatenate((row[0], [row[1]])) for row in df[[x + "XYZ", x]].values]) for x in cols])
+
+        tensor = torch.from_numpy(result_np).type(torch.float32)
+        return tensor
+
+        # return tensor
+
+    def predict_initial_shift(self, electrode_tensor: torch.Tensor, mesh_pca_pts):
+        """
+        Predict the initial shift of the electrode.
+        """
+        # Apply the model to the electrode tensor
+        mesh_tensor = torch.from_numpy(np.expand_dims(mesh_pca_pts, axis=0)).type(torch.float32)
+        # print(mesh_tensor)
+        # print(electrode_tensor)
+        result = self.net_shift(electrode_tensor, mesh_tensor)
+        return result
+
+    #    def convert_df_to_electrode_records(self, df: pd.DataFrame, to_mni_transform, require_mirror) -> List[ElectrodeRecord]:
 
     def resourcePath(self, relativePath):
         """
@@ -991,166 +1081,6 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime - startTime:.2f} seconds')
-
-    def brain_extraction(self, t1: vtkMRMLVolumeArchetypeStorageNode) -> None:
-        image_name = t1.GetFileName()
-
-        print("FINISHED EXTRACTOR")
-        mask_filename = str(Path(image_name).parent / "t1_mask.nii.gz")
-
-        cmd = sys.executable + " "
-        cmd += self.resourcePath("py/bet.py") + " "
-        cmd += str(image_name) + " " + mask_filename
-        subprocess.call(cmd, shell=True)
-
-    def coregistration_t2_t1(self, t1: vtkMRMLVolumeArchetypeStorageNode, t2: vtkMRMLVolumeArchetypeStorageNode,
-                             out_name: str) -> None:
-
-        out_folder = str(Path(out_name).parent)
-        t1_path = t1.GetFileName()
-        t2_path = t2.GetFileName()
-        slicer_preprocessing.elastix_registration(
-            ref_image=t1_path,
-            flo_image=t2_path,
-            elastix_parameters=self.resourcePath('elastix/rigid_mri.txt'),
-            out_folder=out_folder)
-        ((Path(out_folder) / "result.0.nii.gz")
-         .rename((out_name)))
-
-    def intensity_normalisation(self, out_folder: str) -> None:
-        slicer_preprocessing.intensity_normalisation(out_folder)
-
-    def two_step_coregistration(self, node_to_transform, workdir: str) -> vtkMRMLTransformNode:
-        mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
-        elastix_affine = self.resourcePath('elastix/affine_mri.txt')
-        struct_image = str(Path(workdir) / "t1.nii.gz")
-        slicer_preprocessing.elastix_registration(ref_image=mni,
-                                                  flo_image=struct_image,
-                                                  elastix_parameters=elastix_affine,
-                                                  out_folder=workdir)
-        tfm_file = Path(workdir) / "TransformParameters.0.tfm"
-        transfortm_node = slicer.util.loadTransform(tfm_file)
-
-        node_to_transform.SetAndObserveTransformNodeID(transfortm_node.GetID())
-        node_to_transform.HardenTransform()
-        return transfortm_node
-
-    def on_chage_load_image(self, key, newvalue, dirname):
-        x = None
-        try:
-            x = getattr(self, key)
-            # print(1)
-        except:
-            # print(1.1)
-            pass
-        if x is not None:
-            if x == newvalue:
-                return
-
-        if not hasattr(self, key):
-            #            print(newvalue)
-            setattr(self, key, newvalue)
-        else:
-            print(1)
-        print("xxx ", self.processing_folder)
-        print(newvalue)
-        print('I am loading ', newvalue, " to ", key)
-        print(Path(dirname) / (key + ".nii.gz"))
-        shutil.copy(
-            Path(str(self.processing_folder / newvalue)),
-            Path(dirname) / (key + ".nii.gz")
-        )
-
-        try:
-            node = slicer.util.getNode(key)
-            slicer.mrmlScene.RemoveNode(node)
-
-            # node is found
-        except:  # node not found
-            pass  # todo change this method to get t2
-        node = loadNiiImage(Path(dirname) / (key + ".nii.gz"))
-        node.SetName(key)
-
-    def segment_side(self, t2, center_pred_point, image_coords, mirror=False):
-        # load mesh
-        mesh = read_mesh(self.resourcePath('nets/3.obj'))
-        mm_offset = 2
-        # t2 = slicer.util.getNode("t2_normalised")
-        image_processor = SlicerImage(t2.GetImageData())
-
-        transform_ras_to_ijk = vtk.vtkMatrix4x4()
-        t2.GetIJKToRASMatrix(transform_ras_to_ijk)
-        transform_ras_to_ijk.Invert()
-
-        shape_im = compute_image_at_pts(image_processor, image_coords, transform_ras_to_ijk,
-                                        (self.shape_label_mask.n_x,
-                                         self.shape_label_mask.n_y, self.shape_label_mask.n_z))
-        shape_im = self.shape_histogram.apply_normalization(shape_im)
-        shape_im = convert_to_tensor(shape_im)
-
-        print("segm start")
-        out_pcas = self.shape_predictor(shape_im, False)
-        print("segm finished")
-        off_cent, result_center = compute_center_offset(center_pred_point, out_pcas, mm_offset)
-        shape = compute_shape(self.shape_pca_res[0], out_pcas, result_center)
-
-        res_pts = shape
-
-        print(res_pts.shape, res_pts)
-        if mirror:
-            shape, result_center = apply_mirror(shape, result_center)
-
-        return change_mesh(mesh, shape), result_center, res_pts
-
-    def segmentSTNs(self, t2_node) -> Tuple[MESH_results, MESH_results]:
-        mm_offset = 2
-        print("Starting segmentation")
-
-        t2 = t2_node
-        image_processor = SlicerImage(t2.GetImageData())
-
-        transform_ras_to_ijk = vtk.vtkMatrix4x4()
-        t2.GetIJKToRASMatrix(transform_ras_to_ijk)
-
-        transform_ras_to_ijk.Invert()
-        a = image_processor.compute_image_at_mask(self.det_mask, transform_ras_to_ijk)
-        a = list(a)
-        a[0] = self.cent_det_hist.apply_normalization(a[0])
-        a[1] = self.cent_det_hist.apply_normalization(a[1])
-
-        try:
-            res_a0 = np.expand_dims(a[0], axis=0)
-            res_a0 = self.center_detector(torch.from_numpy(np.expand_dims(res_a0, axis=0)))
-            res_a1 = np.expand_dims(a[1], axis=0)
-            res_a1 = self.center_detector(torch.from_numpy(np.expand_dims(res_a1, axis=0)))
-
-            res_a0 = self.center_detector_scaller.inverse_transform(res_a0.detach().numpy())[0]
-            res_a1 = self.center_detector_scaller.inverse_transform(res_a1.detach().numpy())[0]
-            self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
-            self.center_orig.AddControlPointWorld(-1 * res_a0[0], res_a0[1], res_a0[2])
-            self.center_orig.AddControlPointWorld(res_a1[0], res_a1[1], res_a1[2])
-            # compute segmentation
-            image_coords_mirr = self.shape_label_mask.get_coords_list() + res_a0
-            image_coords_orig = self.shape_label_mask.get_coords_list() + res_a1
-            image_coords_mirr = image_coords_mirr * np.array([-1, 1, 1])
-
-            mesh_orig, cent_orig, pts_left = self.segment_side(t2, res_a1, image_coords_orig)
-            mesh_mirr, cent_mirr, pts_right = self.segment_side(t2, res_a0, image_coords_mirr, True)
-
-            print(cent_orig, cent_mirr)
-            cent_mirr = cent_mirr[0]
-            cent_orig = cent_orig[0]
-            self.center_orig = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
-            self.center_orig.AddControlPointWorld(cent_mirr[0], cent_mirr[1], cent_mirr[2])
-            self.center_orig.AddControlPointWorld(cent_orig[0], cent_orig[1], cent_orig[2])
-
-            mesh1 = display_mesh(mesh_orig, "Mesh left")
-            mesh2 = display_mesh(mesh_mirr, "Mesh right")
-
-            return (mesh1, pts_left), (mesh2, pts_right)
-
-        except Exception as e:
-            raise e
 
     def process_mer_data(self, left_markups,
                          right_markups,
@@ -1242,6 +1172,61 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         transform_node_left = generate_transformation_from_shift(left_shift, "left_shift")
         transform_node_right = generate_transformation_from_shift(right_shift, "right_shift")
         return transform_node_left, transform_node_right
+        pass
+
+    def get_pcas_from_mesh(self, node: vtkMRMLModelNode, mirror=False):
+        pts = extract_points_from_mesh(mesh=node.GetMesh())
+
+        if mirror:
+            pts = np.reshape(pts, (int(len(pts) / 3), 3))
+            pts = pts * np.array([-1, 1, 1])
+            pts = np.reshape(pts, (1, -1))[0]
+            # print(pts.shape)
+
+        res_pts = self.mer_transforms['pipe'].transform([pts])[0]
+        return res_pts, pts
+
+    def classify_mers(self, mer_data: torch.Tensor):
+        """
+        clasify mers
+        """
+
+        with torch.no_grad():
+            output = self.mer_classification_net(mer_data) > 0.5
+
+        return output
+
+    def predict_shift(self, mer_data: torch.Tensor,
+                      original_shift: torch.Tensor,
+                      mesh: vtk.vtkPolyData):
+        """
+        predict shift
+        input:
+        mer_data: torch.Tensor unscalled mer data with shape (n, 4) x,y,z,record
+        original_shift: torch.Tensor original estimated shift
+        mesh: vtk.vtkPolyData mesh to be used for the optimisation
+        """
+
+        classes = self.classify_mers(mer_data)
+
+        return optimise_mer_signal(mer_data, original_shift, mesh, classes)
+
+        pass
+
+    def create_mesh_copy(self, node: vtkMRMLModelNode):
+        """
+        create a copy of the mesh
+        return: vtkPolyData
+        """
+
+        # get mesh from node
+        mesh = node.GetMesh()
+
+        # create a copy of the mesh
+        mesh_copy = vtk.vtkPolyData()
+        mesh_copy.DeepCopy(mesh)
+        return mesh_copy
+
         pass
 
 

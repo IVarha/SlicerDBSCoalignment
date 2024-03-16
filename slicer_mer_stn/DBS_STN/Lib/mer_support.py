@@ -31,7 +31,7 @@ class Point:
             return Point(self.x * other, self.y * other, self.z * other)
         elif isinstance(other, Point):
             return Point(self.x * other.x, self.y * other.y, self.z * other.z)
-        elif isinstance(other,(list,np.ndarray)):
+        elif isinstance(other, (list, np.ndarray)):
             return Point(self.x * other[0], self.y * other[1], self.z * other[2])
         else:
             return NotImplemented
@@ -106,7 +106,7 @@ def compute_ElectrodeArray(line: EntryTarget, transform=None) -> ElectrodeArray:
             [-v[1], v[0], 0]
         ])
         rotation_matrix = np.eye(3) + skew_symmetric_v + np.dot(skew_symmetric_v, skew_symmetric_v) * (
-                    (1 - c) / (s ** 2))
+                (1 - c) / (s ** 2))
         return rotation_matrix
 
     ##################################
@@ -144,16 +144,17 @@ def compute_ElectrodeArray(line: EntryTarget, transform=None) -> ElectrodeArray:
                           pos=EntryTarget(pos_en, pos_ex))
 
 
-def compute_vector_direction(central_point: Point, target_point: Point,distance=2) -> (Point, Point):
+def compute_vector_direction(central_point: Point, target_point: Point, distance=2) -> (Point, Point):
     """
     computes vector direction from central point to target point
     """
 
     pt1 = target_point - central_point
-    pt1 = pt1.compute_normal_vector() # normalise vector of direction
+    pt1 = pt1.compute_normal_vector()  # normalise vector of direction
 
     res_pt = pt1 * distance + central_point
     return res_pt, pt1
+
 
 def cross_generation_mni(ent_tg_native: EntryTarget, to_mni):
     """
@@ -201,12 +202,12 @@ def cross_generation_mni(ent_tg_native: EntryTarget, to_mni):
     pos_entry, pos_v = compute_vector_direction(central_point=ent_tg_native.entry, target_point=pos_native, distance=2)
     pos_target = (2 * pos_v) + ent_tg_native.target
 
-    return ElectrodeArray(cen=EntryTarget(Point.from_array(ent_tg_native.entry.to_array()), Point.from_array(ent_tg_native.target.to_array())),
+    return ElectrodeArray(cen=EntryTarget(Point.from_array(ent_tg_native.entry.to_array()),
+                                          Point.from_array(ent_tg_native.target.to_array())),
                           lat=EntryTarget(lat_entry, lat_target),
                           med=EntryTarget(med_entry, med_target),
                           ant=EntryTarget(ant_entry, ant_target),
                           pos=EntryTarget(pos_entry, pos_target))
-
 
 
 @dataclass
@@ -215,33 +216,34 @@ class ElectrodeRecord:
     electrode contain [x,y,z,NRMS]
     """
     location: Point
-    record : float # NRMS value for now
-    label: int # 0-out 1-in
+    record: float  # NRMS value for now
+    label: int  # 0-out 1-in
 
-    def get_record_label(self) ->(np.ndarray,np.ndarray):
+    def get_record_label(self) -> (np.ndarray, np.ndarray):
         """
         return p
         """
-        return np.array([self.location.x,self.location.y,self.location.z,self.record]),np.array([self.label])
+        return np.array([self.location.x, self.location.y, self.location.z, self.record]), np.array([self.label])
 
     @staticmethod
-    def electrode_list_to_array( electrode_records : Iterable["ElectrodeRecord"]):
-        record,target = [],[]
+    def electrode_list_to_array(electrode_records: Iterable["ElectrodeRecord"]):
+        record, target = [], []
         for el_rec in electrode_records:
-            x,y = el_rec.get_record_label()
+            x, y = el_rec.get_record_label()
             record.append(x)
             target.append(y)
         # for i in range(len(record)):
         #     print( record[i], target[i])
-        result = np.vstack(record),np.vstack(target)
-        #for i in range(len(record)):
-             #print( result[0][i], result[1][i])
+        result = np.vstack(record), np.vstack(target)
+        # for i in range(len(record)):
+        # print( result[0][i], result[1][i])
         return result
 
     @staticmethod
-    def extract_electrode_records_from_array(array : ElectrodeArray,
+    def extract_electrode_records_from_array(array: ElectrodeArray,
                                              mer_data: MER_data,
-                                             transformation: Optional[np.ndarray]) -> Dict[str,List["ElectrodeRecord"]] :
+                                             transformation: Optional[np.ndarray]) -> Dict[
+        str, List["ElectrodeRecord"]]:
         """
         Extracts electrode records from an array based on MER data and a transformation matrix.
 
@@ -265,11 +267,10 @@ class ElectrodeRecord:
                 if el_name not in result:
                     result[el_name] = []
 
-                ent_targ : EntryTarget = getattr(array,el_name)
-                vector= ent_targ.target - ent_targ.entry
+                ent_targ: EntryTarget = getattr(array, el_name)
+                vector = ent_targ.target - ent_targ.entry
 
                 norm = vector / np.linalg.norm(vector.to_array())
-
 
                 res_pt = ent_targ.target + dists[i_distance] * norm
                 res_pt.apply_transformation(transformation)
@@ -278,8 +279,9 @@ class ElectrodeRecord:
                                      record=mer_data.extracted_features[el_indx][i_distance],
                                      label=0)
                 result[el_name].append(er)
-                #result.append(er)
+                # result.append(er)
         return result
+
 
 def check_points_inside_vtk_mesh(mesh, points):
     """
@@ -315,6 +317,7 @@ def check_points_inside_vtk_mesh(mesh, points):
 
     return is_inside
 
+
 def distances_to_mesh(points, mesh_vertices):
     """
     Calculate the distances from given points to a mesh composed of vertices.
@@ -339,16 +342,16 @@ def distances_to_mesh(points, mesh_vertices):
     return min_distances
 
 
-def compute_distances_to_mesh( mesh_points: np.ndarray, points_to_compute: torch.Tensor ) -> (np.ndarray,np.ndarray):
-    res_vector,res_dists= [],[]
+def compute_distances_to_mesh(mesh_points: np.ndarray, points_to_compute: torch.Tensor) -> (np.ndarray, np.ndarray):
+    res_vector, res_dists = [], []
 
     for i in points_to_compute.shape[0]:
         mp = mesh_points - points_to_compute[i]
-        norms = np.linalg.norm(mp,axis=1)
+        norms = np.linalg.norm(mp, axis=1)
         id = norms.tolist().index(min(norms))
-        res_vector.append( mp[id]/ norms[id])
+        res_vector.append(mp[id] / norms[id])
         res_dists.append(norms[id])
-    return np.array(res_dists),np.array(res_vector)
+    return np.array(res_dists), np.array(res_vector)
 
 
 def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Tensor:
@@ -363,10 +366,10 @@ def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Te
         torch.Tensor: Tensor representing the correctly placed bitmap.
     """
     x = []
-    #print(labeled_points.shape)
-    #print(current_output.shape)
+    # print(labeled_points.shape)
+    # print(current_output.shape)
     for i in range(len(current_output)):
-        if current_output[i] != labeled_points[i]: # not equal
+        if current_output[i] != labeled_points[i]:  # not equal
             if labeled_points[i] == 1:
                 x.append(2)
             else:
@@ -375,6 +378,8 @@ def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Te
             x.append(0)
 
     return torch.from_numpy(np.array(x))
+
+
 def extract_points_from_mesh(mesh):
     # Get the vtkPoints object from the mesh
     points = mesh.GetPoints()
@@ -391,10 +396,11 @@ def extract_points_from_mesh(mesh):
 
     # Return the list of points
     return points_list
+
+
 def optimisation_criterion(orig_points, in_out, shift, mesh: vtk.vtkPolyData):
     """
     Calculate the criterion value for a given set of original points, in_out values, shift vector, and mesh.
-
     Args:
         orig_points (torch.Tensor): The original points.
         in_out (torch.Tensor): The in_out values.
@@ -413,14 +419,14 @@ def optimisation_criterion(orig_points, in_out, shift, mesh: vtk.vtkPolyData):
     #    if isinstance(orig_points,np.ndarray):
     #        points_inside_posttrans = mesh.is_points_inside(new_points.tolist())
     #    else:
-    points_inside_posttrans = check_points_inside_vtk_mesh(mesh,new_points.detach().numpy())
+    points_inside_posttrans = check_points_inside_vtk_mesh(mesh, new_points.detach().numpy())
 
     weight = generate_correctly_placed_bitmap(in_out, points_inside_posttrans)
     # print(f'    {(weight>0).sum():.2f}')
 
     mp = extract_points_from_mesh(mesh)
     # print ("mesh pt 0", mp[:3])
-    mesh_pts = np.reshape(mp,(len(mp) // 3, 3))
+    mesh_pts = np.reshape(mp, (len(mp) // 3, 3))
 
     mesh_pts = torch.from_numpy(mesh_pts)
     # print(torch.abs(distances_to_mesh(new_points,mesh_pts)))
@@ -436,21 +442,18 @@ def optimisation_criterion(orig_points, in_out, shift, mesh: vtk.vtkPolyData):
     return result_error
 
 
-
-def clasify_mers(mer_data : Dict[str , List[ElectrodeRecord]],model):
+def clasify_mers(mer_data: Dict[str, List[ElectrodeRecord]], model):
     """
     clasify mers
     """
 
     tmp = {}
     tmp_vector = []
-    for k,v in mer_data.items():
-        #print(k)
+    for k, v in mer_data.items():
+        # print(k)
         tmp[k] = len(v)
-        tmp_vector +=v
-    record,target = ElectrodeRecord.electrode_list_to_array(tmp_vector)
-
-
+        tmp_vector += v
+    record, target = ElectrodeRecord.electrode_list_to_array(tmp_vector)
 
     record = torch.from_numpy(record).float()
     target = torch.from_numpy(target).float()
@@ -461,16 +464,16 @@ def clasify_mers(mer_data : Dict[str , List[ElectrodeRecord]],model):
     output = output.numpy()
     i = 0
     res_el_record = {}
-    for k,v in tmp.items():
-        electrode_output = output[i:i+v] > 0.5
+    for k, v in tmp.items():
+        electrode_output = output[i:i + v] > 0.5
         res_el_record[k] = []
         for j in range(v):
-            tmp_vector[i+j].label = electrode_output[j]
-            res_el_record[k].append(tmp_vector[i+j])
+            tmp_vector[i + j].label = electrode_output[j]
+            res_el_record[k].append(tmp_vector[i + j])
 
         i += v
     return res_el_record
 
-
     return output
+
 

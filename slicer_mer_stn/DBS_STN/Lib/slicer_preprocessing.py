@@ -3,22 +3,15 @@ import os
 from pathlib import Path
 import subprocess
 import shlex
+
+import ants
+import antspynet
 import nibabel as nib
 import numpy as np
 from intensity_normalization.cli.fcm import fcm_main
 import sys
 
 
-def register_t2_to_t1(script_home, t1, t2, out_name):
-    parent = str(Path(out_name).parent)
-    print(1)
-
-    #
-    flirt_command = (f"flirt -in {t2} "
-                     f"-ref {t1} -out {out_name} ")
-    flirt_command = shlex.split(flirt_command)
-
-    subprocess.check_output(flirt_command)
 
 
 def wm_segmentation(t1, out_folder):
@@ -32,10 +25,16 @@ def wm_segmentation(t1, out_folder):
     # copy_image = shlex.split(copy_image)
     # subprocess.check_output(copy_image)
 
-    fast_command = f"fast -R 0.0 -H 0.0 -t 1 {str(Path(out_folder) / 't1.nii.gz')}"
-    fast_command = shlex.split(fast_command)
-    subprocess.check_output(fast_command)
-    print(fast_command)
+
+    t1_image = ants.image_read(t1)
+    res = antspynet.deep_atropos(t1_image)
+
+    si = res['segmentation_image']
+    wm = (si == 3) or (si == 4) or (si == 5)
+
+
+    wm_file = str(Path(out_folder) / "wm_mask.nii.gz")
+    ants.image_write(wm, wm_file)
 
 
 def binarise_threshold(filename, threshold, save_filename):
@@ -62,17 +61,11 @@ def intensity_normalisation(out_folder):
     """
     file_name = "t2_normalised.nii.gz"
     t2_file = Path(out_folder) / "coreg_t2.nii.gz"
-    pve_seg = Path(out_folder) / "t1_pveseg.nii.gz"
     wm_mask = str(Path(out_folder) / "wm_mask.nii.gz")
-    binarise_threshold(filename=str(pve_seg), threshold=2, save_filename=wm_mask)
 
-    run_wm_slab_creation = "fcm-normalize {t2_file} " \
-                           "-tm {wm_mask} " \
-                           "-o {o_file} -mo t2 -v".format(t2_file=t2_file
-                                                          , wm_mask=wm_mask,
-                                                          o_file=Path(out_folder) / file_name
-                                                          )
-    sys.argv = shlex.split(run_wm_slab_creation)
+
+    run_wm_slab_creation = ["fcm-normalize", str(t2_file),"-tm", wm_mask, "-o",str(Path(out_folder) / file_name), "-mo", "t2", "-v"]
+    sys.argv = run_wm_slab_creation
     fcm_main()
 
 
@@ -80,9 +73,8 @@ def elastix_registration(ref_image,
                          flo_image,
                          elastix_parameters,
                          out_folder):
-    flirt_command = f"elastix -f {ref_image} -m {str(flo_image)} -p {elastix_parameters}" \
-                    f" -out {out_folder}"
-    flirt_command = shlex.split(flirt_command)
+
+    flirt_command = ["elastix", "-f", ref_image, "-m", str(flo_image), "-p", elastix_parameters, "-out", out_folder]
     subprocess.check_output(flirt_command)
 
 
