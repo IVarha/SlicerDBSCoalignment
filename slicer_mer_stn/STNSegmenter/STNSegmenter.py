@@ -13,8 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Annotated, Optional, Tuple
 
-
-from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLTransformNode, vtkMRMLModelNode
+from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLTransformNode, vtkMRMLModelNode, \
+    vtkMRMLModelDisplayNode
 from sklearn.preprocessing import MinMaxScaler
 
 from segm_lib import slicer_preprocessing
@@ -310,7 +310,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                         , t2=self.t2_node.GetStorageNode(),
                                         out_name=str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
 
-        #load t2 coregistered image
+        # load t2 coregistered image
         t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
         self.ui.t2inputSelector.currentNodeChanged(t2_node)
         print(self.t2_node.GetName())
@@ -374,10 +374,24 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         mm_offset = 2
         print("Starting segmentation")
 
-
         left, right = self.logic.segmentSTNs(self.t2_node)
-        self.pts_left = left[1]
-        self.pts_right = right[1]
+
+        ## add mni^-1 transformation to the mesh nodes
+
+        #invert tranform node
+        inverted_transform = slicer.vtkMRMLTransformNode()
+        inverted_transform.SetName("to_mni_inverted")
+        mt1 = vtk.vtkMatrix4x4()
+
+        self.transform_node.GetMatrixTransformFromParent(mt1)
+        inverted_transform.SetMatrixTransformToParent(mt1)
+        slicer.mrmlScene.AddNode(inverted_transform)
+        #inverted_transform.SetMatrixTransformToParent(self.transform_node.GetMatrixTransformToParent())
+
+        left[0].SetAndObserveTransformNodeID(inverted_transform.GetID())
+        right[0].SetAndObserveTransformNodeID(inverted_transform.GetID())
+        self.t2_node.SetAndObserveTransformNodeID(inverted_transform.GetID())
+
 
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
@@ -465,6 +479,8 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 #
 
 MESH_results = Tuple[vtkMRMLModelNode, np.ndarray]
+
+
 class STNSegmenterLogic(ScriptedLoadableModuleLogic):
     """This class should implement all the actual
     computation done by your module.  The interface
@@ -553,17 +569,16 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
 
         img = ants.image_read(image_name)
 
-        mask  = antspynet.brain_extraction(img,"t1") > 0.8
-
+        mask = antspynet.brain_extraction(img, "t1") > 0.8
 
         mask_filename = str(Path(temp_dir_path) / "t1_mask.nii.gz")
         masked_image = img * mask
         ants.image_write(mask, mask_filename)
         ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
         print("FINISHED EXTRACTOR")
-        #cmd = [sys.executable, self.resourcePath("py/bet.py"), str(image_name), mask_filename, str(Path(temp_dir_path) / "t1.nii.gz")]
-        #print(cmd)
-        #subprocess.call(cmd, shell=True)
+        # cmd = [sys.executable, self.resourcePath("py/bet.py"), str(image_name), mask_filename, str(Path(temp_dir_path) / "t1.nii.gz")]
+        # print(cmd)
+        # subprocess.call(cmd, shell=True)
 
     def coregistration_t2_t1(self, t1: vtkMRMLVolumeArchetypeStorageNode, t2: vtkMRMLVolumeArchetypeStorageNode,
                              out_name: str) -> None:
@@ -641,13 +656,18 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
             self.center_orig.AddControlPointWorld(cent_mirr[0], cent_mirr[1], cent_mirr[2])
             self.center_orig.AddControlPointWorld(cent_orig[0], cent_orig[1], cent_orig[2])
 
+
+
+
             mesh1 = display_mesh(mesh_orig, "Mesh left")
             mesh2 = display_mesh(mesh_mirr, "Mesh right")
+
 
             return (mesh1, pts_left), (mesh2, pts_right)
 
         except Exception as e:
             raise e
+
     def segment_side(self, t2, center_pred_point, image_coords, mirror=False):
         # load mesh
         mesh = read_mesh(self.resourcePath('nets/3.obj'))
@@ -678,10 +698,14 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
             shape, result_center = apply_mirror(shape, result_center)
 
         return change_mesh(mesh, shape), result_center, res_pts
+
+
 def apply_mirror(shape, result_center):
     shape = shape * [-1, 1, 1]
     result_center = result_center * [-1, 1, 1]
     return shape, result_center
+
+
 def change_mesh(mesh, ch_pts):
     polys = mesh.GetPolys()
     pts = mesh.GetPoints()
@@ -690,26 +714,32 @@ def change_mesh(mesh, ch_pts):
 
     mesh.SetPoints(pts)
     return mesh
+
+
 def compute_shape(pca_transform, out_pcas, result_center):
     pcas = out_pcas[:, :-3]
     shape = pca_transform.inverse_transform(pcas.detach().numpy())[0]
     shape = np.reshape(shape, (int(shape.shape[0] / 3), 3)) + result_center
     return shape
 
+
 def compute_center_offset(center_pred_point, out_pcas, mm_offset):
     off_cent = (out_pcas[:, -3:] * 2 * mm_offset) - mm_offset  # reshape center offset
     result_center = center_pred_point + off_cent.detach().numpy()
     return off_cent, result_center
 
+
 def convert_to_tensor(shape_im):
     shape_im = torch.from_numpy(np.expand_dims(np.expand_dims(shape_im, axis=0), axis=0)).type(torch.float32)
     return shape_im
+
 
 def compute_image_at_pts(image_processor, image_coords, transform_ras_to_ijk, result_shape):
     shape_im = image_processor.compute_image_at_pts(points=image_coords,
                                                     transform_ras_to_ijk=transform_ras_to_ijk)
     shape_im = np.reshape(shape_im, result_shape)
     return shape_im
+
 
 def display_mesh(mesh, node_name):
     modelNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode')
@@ -719,7 +749,7 @@ def display_mesh(mesh, node_name):
 
     displayNode = modelNode.GetDisplayNode()
     if displayNode is None:
-        displayNode = slicer.mrmlScene.CreateNodeByClass("vtkMRMLModelDisplayNode")
+        displayNode : vtkMRMLModelDisplayNode= slicer.mrmlScene.CreateNodeByClass("vtkMRMLModelDisplayNode")
         slicer.mrmlScene.AddNode(displayNode)
         modelNode.SetAndObserveDisplayNodeID(displayNode.GetID())
     displayNode.SetScalarVisibility(1)
@@ -728,6 +758,8 @@ def display_mesh(mesh, node_name):
     displayNode.SetOpacity(0.3)
     displayNode.Modified()
     return modelNode
+
+
 #
 # STNSegmenterTest
 #

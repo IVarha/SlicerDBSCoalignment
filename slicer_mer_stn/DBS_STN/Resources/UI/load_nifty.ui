@@ -26,122 +26,73 @@
       <number>25</number>
      </property>
      <layout class="QFormLayout" name="formLayout_2">
+
       <item row="0" column="0">
-       <widget class="QLabel" name="label">
+       <widget class="QLabel" name="label_6">
         <property name="text">
-         <string>Input Folder:</string>
+         <string>Transformation To MNI</string>
         </property>
        </widget>
       </item>
       <item row="0" column="1">
-       <widget class="ctkPathLineEdit" name="inputPathSelector">
-        <property name="filters">
-         <set>ctkPathLineEdit::Dirs|ctkPathLineEdit::Drives|ctkPathLineEdit::Executable|ctkPathLineEdit::NoDot|ctkPathLineEdit::NoDotDot|ctkPathLineEdit::Readable</set>
+       <widget class="qMRMLNodeComboBox" name="transform_inputSelector">
+        <property name="toolTip">
+         <string>Pick the input to the algorithm.</string>
+        </property>
+        <property name="nodeTypes">
+         <stringlist notr="true">
+          <string>vtkMRMLTransformNode</string>
+         </stringlist>
+        </property>
+
+        <property name="SlicerParameterName" stdset="0">
+         <string>inputVolume</string>
         </property>
        </widget>
       </item>
       <item row="1" column="0">
-       <widget class="QLabel" name="label_6">
+       <widget class="QLabel" name="label_7">
         <property name="text">
-         <string>Structural Image</string>
+         <string>Feature Text File</string>
         </property>
        </widget>
       </item>
       <item row="1" column="1">
-       <widget class="QComboBox" name="structuralInputSelector"/>
+       <widget class="qMRMLNodeComboBox" name="textinputSelector">
+        <property name="toolTip">
+         <string>Pick the input to the algorithm.</string>
+        </property>
+        <property name="nodeTypes">
+         <stringlist notr="true">
+          <string>vtkMRMLTextNode</string>
+         </stringlist>
+        </property>
+
+        <property name="SlicerParameterName" stdset="0">
+         <string>inputVolume</string>
+        </property>
+       </widget>
       </item>
       <item row="2" column="0">
        <widget class="QLabel" name="label_7">
         <property name="text">
-         <string>T2 Image</string>
+         <string>STN Segmentation</string>
         </property>
        </widget>
       </item>
       <item row="2" column="1">
-       <widget class="QComboBox" name="t2InputSelector"/>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="ctkCollapsibleButton" name="SegmentationCollapsibleButton">
-     <property name="text">
-      <string>Preprocessing</string>
-     </property>
-     <layout class="QFormLayout" name="formLayout_4">
-      <item row="0" column="0">
-       <widget class="QLabel" name="label_2">
-        <property name="text">
-         <string>Thresholded volume:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="qMRMLNodeComboBox" name="outputSelector">
+       <widget class="qMRMLNodeComboBox" name="stn_inputSelector">
         <property name="toolTip">
-         <string>Pick the output to the algorithm.</string>
+         <string>Pick the input to the algorithm.</string>
         </property>
         <property name="nodeTypes">
          <stringlist notr="true">
-          <string>vtkMRMLScalarVolumeNode</string>
+          <string>vtkMRMLModelNode</string>
          </stringlist>
         </property>
-        <property name="showChildNodeTypes" stdset="0">
-         <bool>false</bool>
-        </property>
-        <property name="noneEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="addEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="removeEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
+
         <property name="SlicerParameterName" stdset="0">
-         <string>thresholdedVolume</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0" colspan="2">
-       <widget class="QPushButton" name="preprocessingButton">
-        <property name="text">
-         <string>(Optional) Coregister T2 to Structural</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0" colspan="2">
-       <widget class="QPushButton" name="betButton">
-        <property name="text">
-         <string>Brain Extraction</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0" colspan="2">
-       <widget class="QPushButton" name="wmSegmentationButton">
-        <property name="text">
-         <string>WM segmentation</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="0" colspan="2">
-       <widget class="QPushButton" name="wmIntensityNormButton">
-        <property name="text">
-         <string>Intensity normalisation</string>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="0" colspan="2">
-       <widget class="QPushButton" name="twoStepCoregistrationButton">
-        <property name="text">
-         <string>Two-step coregistration to MNI</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="0" colspan="2">
-       <widget class="QPushButton" name="segmentationButton">
-        <property name="text">
-         <string>Segment STN's</string>
+         <string>inputVolume</string>
         </property>
        </widget>
       </item>
@@ -154,120 +105,11 @@
       <string>Markups Entry Exit</string>
      </property>
      <layout class="QFormLayout" name="formLayout_4">
-      <item row="0" column="0">
-       <widget class="QLabel" name="label_2">
-        <property name="text">
-         <string>Left entry-exit</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="qMRMLNodeComboBox" name="leftMarkupSelector">
-        <property name="toolTip">
-         <string>Result with inverted threshold will be written into this volume</string>
-        </property>
-        <property name="nodeTypes" stdset="0">
-         <stringlist notr="true">
-          <string>vtkMRMLMarkupsFiducialNode</string>
-         </stringlist>
-        </property>
-        <property name="showChildNodeTypes" stdset="0">
-         <bool>false</bool>
-        </property>
-        <property name="noneEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="addEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="removeEnabled" stdset="0">
-         <bool>true</bool>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>invertedVolume</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_5">
-        <property name="text">
-         <string>Right entry-exit</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="qMRMLNodeComboBox" name="rightMarkupSelector">
-        <property name="toolTip">
-         <string>Right Entry Exit in native space</string>
-        </property>
-        <property name="nodeTypes" stdset="0">
-         <stringlist notr="true">
-          <string>vtkMRMLMarkupsFiducialNode</string>
-         </stringlist>
-        </property>
-        <property name="showChildNodeTypes">
-         <bool>false</bool>
-        </property>
-        <property name="noneEnabled">
-         <bool>true</bool>
-        </property>
-        <property name="addEnabled">
-         <bool>true</bool>
-        </property>
-        <property name="removeEnabled">
-         <bool>true</bool>
-        </property>
-        <property name="SlicerParameterName">
-         <string>rightMarkup</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="label_2">
-        <property name="text">
-         <string>Left MER signal</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-             <widget class="ctkPathLineEdit" name="LeftMERFileSelector">
-        <property name="filters">
-         <set>ctkPathLineEdit::Files</set>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="label_2">
-        <property name="text">
-         <string>Right MER signal</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="ctkPathLineEdit" name="RightMERFileSelector">
-        <property name="filters">
-         <set>ctkPathLineEdit::Files</set>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="0" colspan="2">
-       <widget class="QPushButton" name="merButton">
-        <property name="text">
-         <string>Run MER</string>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="0" colspan="2">
+
+      <item row="0" column="0" colspan="2">
        <widget class="QPushButton" name="merFinalButton">
         <property name="text">
          <string>Estimate Shift</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="0" colspan="2">
-       <widget class="QPushButton" name="merApplyTransformation">
-        <property name="text">
-         <string>Apply Transformation</string>
         </property>
        </widget>
       </item>
@@ -441,6 +283,54 @@
     <hint type="destinationlabel">
      <x>173</x>
      <y>176</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>load_nifty</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>textinputSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>122</x>
+     <y>132</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>248</x>
+     <y>61</y>
+    </hint>
+   </hints>
+  </connection>
+    <connection>
+   <sender>load_nifty</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>transform_inputSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>122</x>
+     <y>132</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>248</x>
+     <y>61</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>load_nifty</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>stn_inputSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>122</x>
+     <y>132</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>248</x>
+     <y>61</y>
     </hint>
    </hints>
   </connection>
