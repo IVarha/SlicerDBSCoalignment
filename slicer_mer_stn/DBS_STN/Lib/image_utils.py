@@ -4,15 +4,18 @@ import numpy as np
 
 
 from dbs_image_utils.mask import SubcorticalMask
+from vtkmodules.vtkCommonDataModel import vtkImageData
+
 
 class SlicerImage:
 
-    def __init__(self, imageData):
+    def __init__(self, imageData: vtkImageData):
         """
 
         """
         self.imageData = imageData
         self.interpolator = vtk.vtkImageBSplineCoefficients()
+
         self.interpolator.SetSplineDegree(3)
         self.interpolator.SetInputData(imageData)
         self.interpolator.Update()
@@ -21,7 +24,9 @@ class SlicerImage:
         """
         input is a coordinates at t1 coordinates
         """
+
         return self.interpolator.Evaluate(x, y, z)
+
 
     def compute_image_at_mask(self, mask: SubcorticalMask, transform_ras_to_ijk: vtk.vtkMatrix4x4):
         """
@@ -55,7 +60,7 @@ class SlicerImage:
 
     def compute_image_at_pts(self, points, transform_ras_to_ijk: vtk.vtkMatrix4x4):
         """
-        compute image at mask
+        compute image at points defined in image coordinates
         return (mirrored and original image)
         """
         coords_origin = np.array(points)

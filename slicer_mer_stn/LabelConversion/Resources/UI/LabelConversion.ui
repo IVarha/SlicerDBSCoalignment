@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>STNSegmenter</class>
- <widget class="qMRMLWidget" name="STNSegmenter">
+ <class>LabelConversion</class>
+ <widget class="qMRMLWidget" name="LabelConversion">
   <property name="geometry">
    <rect>
     <x>0</x>
     <y>0</y>
     <width>325</width>
-    <height>311</height>
+    <height>431</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -20,28 +20,21 @@
       <item row="0" column="0">
        <widget class="QLabel" name="label">
         <property name="text">
-         <string>T1 volume:</string>
+         <string>Segmentation:</string>
         </property>
        </widget>
       </item>
       <item row="0" column="1">
-       <widget class="qMRMLNodeComboBox" name="inputSelector">
+       <widget class="qMRMLNodeComboBox" name="textinputSelector">
         <property name="toolTip">
          <string>Pick the input to the algorithm.</string>
         </property>
         <property name="nodeTypes">
          <stringlist notr="true">
-          <string>vtkMRMLScalarVolumeNode</string>
+<!--          <string>vtkMRMLModelNode</string>-->
+<!--          <string>vtkMRMLSegmentationNode</string>-->
+          <string>vtkMRMLLabelMapVolumeNode</string>
          </stringlist>
-        </property>
-        <property name="showChildNodeTypes">
-         <bool>false</bool>
-        </property>
-        <property name="addEnabled">
-         <bool>false</bool>
-        </property>
-        <property name="removeEnabled">
-         <bool>false</bool>
         </property>
         <property name="SlicerParameterName" stdset="0">
          <string>inputVolume</string>
@@ -51,41 +44,33 @@
       <item row="2" column="0">
        <widget class="QLabel" name="label_3">
         <property name="text">
-         <string>T2 Volume:</string>
+         <string>Transformation to MNI:</string>
         </property>
        </widget>
       </item>
       <item row="2" column="1">
-       <widget class="qMRMLNodeComboBox" name="t2inputSelector">
+       <widget class="qMRMLNodeComboBox" name="toMNIInputSelector">
         <property name="toolTip">
          <string>Pick the input to the algorithm.</string>
         </property>
         <property name="nodeTypes">
          <stringlist notr="true">
-          <string>vtkMRMLScalarVolumeNode</string>
+          <string>vtkMRMLLinearTransformNode</string>
          </stringlist>
         </property>
-        <property name="showChildNodeTypes">
-         <bool>false</bool>
-        </property>
-        <property name="addEnabled">
-         <bool>false</bool>
-        </property>
-        <property name="removeEnabled">
-         <bool>false</bool>
-        </property>
         <property name="SlicerParameterName" stdset="0">
-         <string>inputVolume</string>
+         <string>toMNI</string>
         </property>
        </widget>
       </item>
      </layout>
     </widget>
    </item>
+
    <item>
-    <widget class="ctkCollapsibleButton" name="SegmentationCollapsibleButton">
+    <widget class="ctkCollapsibleButton" name="outputsCollapsibleButton">
      <property name="text">
-      <string>Preprocessing</string>
+      <string>Outputs</string>
      </property>
      <layout class="QFormLayout" name="formLayout_4">
       <item row="0" column="0">
@@ -102,19 +87,19 @@
         </property>
         <property name="nodeTypes">
          <stringlist notr="true">
-          <string>vtkMRMLScalarVolumeNode</string>
+          <string>vtkMRMLModelNode</string>
          </stringlist>
         </property>
-        <property name="showChildNodeTypes" stdset="0">
+        <property name="showChildNodeTypes">
          <bool>false</bool>
         </property>
-        <property name="noneEnabled" stdset="0">
+        <property name="noneEnabled">
          <bool>true</bool>
         </property>
-        <property name="addEnabled" stdset="0">
+        <property name="addEnabled">
          <bool>true</bool>
         </property>
-        <property name="removeEnabled" stdset="0">
+        <property name="removeEnabled">
          <bool>true</bool>
         </property>
         <property name="SlicerParameterName" stdset="0">
@@ -122,48 +107,7 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="0" colspan="2">
-       <widget class="QPushButton" name="preprocessingButton">
-        <property name="text">
-         <string>(Optional) Coregister T2 to Structural</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0" colspan="2">
-       <widget class="QPushButton" name="betButton">
-        <property name="text">
-         <string>Brain Extraction</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0" colspan="2">
-       <widget class="QPushButton" name="wmSegmentationButton">
-        <property name="text">
-         <string>WM segmentation</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="0" colspan="2">
-       <widget class="QPushButton" name="wmIntensityNormButton">
-        <property name="text">
-         <string>Intensity normalisation</string>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="0" colspan="2">
-       <widget class="QPushButton" name="twoStepCoregistrationButton">
-        <property name="text">
-         <string>Two-step coregistration to MNI</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="0" colspan="2">
-       <widget class="QPushButton" name="segmentationButton">
-        <property name="text">
-         <string>Segment STN's</string>
-        </property>
-       </widget>
-      </item>
+
      </layout>
     </widget>
    </item>
@@ -213,6 +157,13 @@
     </widget>
    </item>
    <item>
+    <widget class="QPushButton" name="applyConvert">
+     <property name="text">
+      <string>Convert Label T</string>
+     </property>
+    </widget>
+   </item>
+   <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
       <enum>Qt::Vertical</enum>
@@ -229,17 +180,6 @@
  </widget>
  <customwidgets>
   <customwidget>
-   <class>qMRMLNodeComboBox</class>
-   <extends>QWidget</extends>
-   <header>qMRMLNodeComboBox.h</header>
-  </customwidget>
-  <customwidget>
-   <class>qMRMLWidget</class>
-   <extends>QWidget</extends>
-   <header>qMRMLWidget.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
    <class>ctkCollapsibleButton</class>
    <extends>QWidget</extends>
    <header>ctkCollapsibleButton.h</header>
@@ -250,13 +190,24 @@
    <extends>QWidget</extends>
    <header>ctkSliderWidget.h</header>
   </customwidget>
+  <customwidget>
+   <class>qMRMLNodeComboBox</class>
+   <extends>QWidget</extends>
+   <header>qMRMLNodeComboBox.h</header>
+  </customwidget>
+  <customwidget>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qMRMLWidget.h</header>
+   <container>1</container>
+  </customwidget>
  </customwidgets>
  <resources/>
  <connections>
   <connection>
-   <sender>STNSegmenter</sender>
+   <sender>LabelConversion</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
-   <receiver>inputSelector</receiver>
+   <receiver>toMNIInputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
    <hints>
     <hint type="sourcelabel">
@@ -270,23 +221,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>STNSegmenter</sender>
-   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
-   <receiver>t2inputSelector</receiver>
-   <slot>setMRMLScene(vtkMRMLScene*)</slot>
-   <hints>
-    <hint type="sourcelabel">
-     <x>122</x>
-     <y>132</y>
-    </hint>
-    <hint type="destinationlabel">
-     <x>248</x>
-     <y>61</y>
-    </hint>
-   </hints>
-  </connection>
-  <connection>
-   <sender>STNSegmenter</sender>
+   <sender>LabelConversion</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>outputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -302,7 +237,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>STNSegmenter</sender>
+   <sender>LabelConversion</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>invertedOutputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -317,6 +252,21 @@
     </hint>
    </hints>
   </connection>
-
+     <connection>
+   <sender>LabelConversion</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>textinputSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>122</x>
+     <y>132</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>248</x>
+     <y>61</y>
+    </hint>
+   </hints>
+  </connection>
  </connections>
 </ui>

@@ -4,10 +4,12 @@ import numpy as np
 
 
 from dbs_image_utils.mask import SubcorticalMask
+from vtkmodules.vtkCommonDataModel import vtkImageData
+
 
 class SlicerImage:
 
-    def __init__(self, imageData):
+    def __init__(self, imageData: vtkImageData):
         """
 
         """

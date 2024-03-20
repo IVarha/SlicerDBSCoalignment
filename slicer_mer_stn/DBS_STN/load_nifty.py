@@ -711,7 +711,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # refine shift
 
 
-        #shift = self.logic.predict_shift(unscalled_tensor, shift, self.mesh_copy)
+        shift = self.logic.predict_shift(unscalled_tensor, shift, self.mesh_copy)
         # remove the previous shift node
         self.logic.remove_previous_shift()
 
