@@ -65,7 +65,7 @@ from slicer.util import VTKObservationMixin
 
 from Lib import slicer_preprocessing
 from Lib.image_utils import SlicerImage
-from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, optimisation_criterion, \
+from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, \
     clasify_mers, extract_points_from_mesh
 from Lib.utils_file import get_images_in_folder
 from Lib.visualisiation import LeadORLogic
@@ -249,9 +249,9 @@ def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Te
     for i in range(len(current_output)):
         if current_output[i] != labeled_points[i]:  # not equal
             if labeled_points[i] == 1:
-                x.append(2)
-            else:
                 x.append(1)
+            else:
+                x.append(2)
         else:
             x.append(0)
 
@@ -279,13 +279,13 @@ def distances_to_mesh(points, mesh_vertices):
 
     return min_distances
 
-def optimisation_criterion(orig_points, in_out, shift, mesh: vtk.vtkPolyData):
+def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPolyData,verbose= False):
     """
     Calculate the criterion value for a given set of original points, in_out values, shift vector, and mesh.
     Args:
         orig_points (torch.Tensor): The original points.
         in_out (torch.Tensor): The in_out values.
-        shift (torch.Tensor): The shift vector.
+        shift (torch.Tensor): The shift vector. TARGET
         mesh (cMesh): The mesh object.
 
     Returns:
@@ -296,14 +296,14 @@ def optimisation_criterion(orig_points, in_out, shift, mesh: vtk.vtkPolyData):
     if isinstance(orig_points, np.ndarray):
         orig_points = torch.from_numpy(orig_points)
     # print(orig_points)
-    new_points = orig_points - shift
-    #    if isinstance(orig_points,np.ndarray):
-    #        points_inside_posttrans = mesh.is_points_inside(new_points.tolist())
-    #    else:
+    new_points = orig_points*scalling - shift
+
     points_inside_posttrans = check_points_inside_vtk_mesh(mesh, new_points.detach().numpy())
 
     weight = generate_correctly_placed_bitmap(in_out, points_inside_posttrans)
-    # print(f'    {(weight>0).sum():.2f}')
+    if verbose:
+        print("Wrongly marked points: " , str((weight>0).sum()))
+        #print(f'    {(weight>0).sum():.2f}')
 
     mp = extract_points_from_mesh(mesh)
     # print ("mesh pt 0", mp[:3])
@@ -318,7 +318,7 @@ def optimisation_criterion(orig_points, in_out, shift, mesh: vtk.vtkPolyData):
     else:
         result_error = result_error / (weight > 0).sum()
 
-    result_error = result_error + ((weight > 0).sum()) * 0.1
+    result_error = result_error + ((weight > 0).sum())
 
     return result_error
 def optimise_mer_signal(mer_data: torch.Tensor, origin_shift: torch.Tensor, mesh, classes: torch.Tensor):
@@ -330,28 +330,38 @@ def optimise_mer_signal(mer_data: torch.Tensor, origin_shift: torch.Tensor, mesh
     """
     # convert mer_data to torch tensor
 
-    optimise_f = lambda x: optimisation_criterion(mer_data, classes, shift=x, mesh=mesh) - 1* torch.linalg.norm(x)
+    optimise_f = lambda x,y, verbose=False: (2*optimisation_criterion(mer_data, classes, shift=x,scalling=y,mesh=mesh, verbose= verbose)
+                                             #+torch.linalg.norm(x)
+                                           + (torch.linalg.norm(x) if torch.linalg.norm(x) > 0.2 else 1/torch.linalg.norm(x))
+                                           )
 
     x = origin_shift.clone().detach().requires_grad_(True)
-
+    y = torch.tensor([1.0,1.0,1.0], requires_grad=True)
+    print("------------------------------")
     print("Origin estimated value of shift:", x)
-    print("Origin estimated value of the function:", optimise_f(x).item())
+    print("Origin estimated value of the function:", optimise_f(x,y,True).item())
     print("original estimated distance", torch.linalg.norm(x))
     # Define the optimizer
-    optimizer = torch.optim.SGD([x], lr=0.004)
+    optimizer = torch.optim.SGD([x,y], lr=0.004)
+
+    min_value = 1
+    max_value = 1
 
     # Optimization loop
-    for i in range(100):
+    for i in range(2000):
         optimizer.zero_grad()  # Zero out the gradients
-        output = optimise_f(x)  # Compute the function value
+        output = optimise_f(x,y)  # Compute the function value
         output.backward()  # Compute gradients
+        y.grad[y < min_value] = 0
+        y.grad[y > max_value] = 0
+
         optimizer.step()  # Update parameters
-
-    print("Optimized value of x:", x)
+    print("\n\n\n")
+    print("Optimized value of x:", x, " y:", y)
     print("final estimated distance", torch.linalg.norm(x))
-    print("Optimized value of the function:", optimise_f(x).item())
-
-    return x.detach().numpy()
+    print("Optimized value of the function:", optimise_f(x,y,True).item())
+    print("------------------------------")
+    return x.detach().numpy(), y.detach().numpy()
 
 
 #
@@ -677,6 +687,32 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onInputTransformSelected(self, node: vtkMRMLTransformNode):
         self.to_mni = node
 
+    def compute_text(self,classes, distance_to_target,columns):
+
+        # extract the classes
+        classes = classes.detach().numpy()
+
+        # create dict from columns as keys
+        dict_cols = {col: [] for col in columns}
+        i = 0
+        d = len(distance_to_target)
+        for col in columns:
+            for j in range(d):
+                dict_cols[col].append(int(classes[i*d + j][0]))
+            i += 1
+        res = pd.DataFrame(dict_cols)
+        res['RecordingSiteDTT'] = distance_to_target
+        #remove text node if exists
+        if slicer.mrmlScene.GetFirstNodeByName("LeadOR:Classes"):
+            slicer.mrmlScene.RemoveNode(slicer.mrmlScene.GetFirstNodeByName("LeadOR:Classes"))
+
+        # create text node
+        text = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTextNode')
+        text.SetText(res.to_csv(index=False))
+
+        return text
+
+
     def onInputTextSelected(self, node: vtkMRMLTextNode):
         self.text = node
         #
@@ -692,7 +728,7 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # scale rms to [0,1]
         df_text = self.logic.nrms_min_max_scale(df_text)
         # compute tensor from the dataframe
-        result_tensor = self.logic.df_to_electrode_records_tensor(df_text, to_mni_transform=self.to_mni,
+        result_tensor, mapping_columns, el_mask = self.logic.df_to_electrode_records_tensor(df_text, to_mni_transform=self.to_mni,
                                                                   require_mirror=self.side)
         # clone the tensor
         unscalled_tensor = result_tensor.clone()
@@ -711,16 +747,21 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # refine shift
 
 
-        shift = self.logic.predict_shift(unscalled_tensor, shift, self.mesh_copy)
+        (shift,scalling), classes = self.logic.predict_shift(unscalled_tensor, shift, self.mesh_copy,el_mask)
         # remove the previous shift node
+
+        text_node = self.compute_text(classes, df_text['RecordingSiteDTT'].values, mapping_columns)
+        text_node.SetName("LeadOR:Classes")
+        #print(text_node)
+
         self.logic.remove_previous_shift()
 
 
         # convert the shift to the slicer transformation from Native to Native
 
-        converted_transform = self.logic.convert_to_slicer_transformation(shift, self.to_mni, self.side) # convert to slicer transformation
+        converted_transform = self.logic.convert_to_slicer_transformation(shift,scalling, self.to_mni, self.side) # convert to slicer transformation
 
-        print(shift)
+        #print(shift)
         # create new shift
 
     def check_side(self, bds):
@@ -857,21 +898,6 @@ class load_niftyWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.logic.process(self.ui.inputSelector.currentNode(), self.ui.invertedOutputSelector.currentNode(),
                                    self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked,
                                    showResult=False)
-
-    def onMerRunButtonClicked(self):
-        """
-        Function triggered when the "MER Run" button is clicked.
-        Applies a transformation to the right and left markups nodes and prints the current paths of the MER files.
-        """
-        right_markups = slicer.mrmlScene.GetNodeByID(self.ui.rightMarkupSelector.currentNodeID)
-        left_markups = slicer.mrmlScene.GetNodeByID(self.ui.leftMarkupSelector.currentNodeID)
-        self.mer_left_path = self.ui.LeftMERFileSelector.currentPath
-        self.mer_right_path = self.ui.RightMERFileSelector.currentPath
-
-        self.left_e_rec, self.right_e_rec = self.logic.process_mer_data(right_markups, left_markups,
-                                                                        self.transform_node, self.mer_left_path,
-                                                                        self.mer_right_path)
-
 
 
     def _test_copytransform(self):
@@ -1150,7 +1176,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         text = text_node.GetText()
         iotext = StringIO(text)
         df = pd.read_csv(iotext)
-        return df
+        return df#[1:]
 
     def nrms_df_calculation(self, df: pd.DataFrame) -> pd.DataFrame:
 
@@ -1161,25 +1187,25 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
                 cols.append(col)
 
         # compute means
-        mean = df.iloc[:5][cols].mean()
+        mean = df.iloc[1:5][cols].mean()
         # compute nrms
         df[cols] = df[cols] / mean
 
         return df
 
-    def nrms_min_max_scale(self, df: pd.DataFrame):
+    def nrms_min_max_scale(self,df: pd.DataFrame):
         cols = []
         for col in df.columns:
             if not col.endswith('XYZ') and col != 'RecordingSiteDTT':
                 cols.append(col)
 
-        # compute min max
-        min_max = df[cols].min().values.min(), df[cols].max().values.max()
-        df[cols] = (df[cols] - min_max[0]) / (min_max[1] - min_max[0])
+            # compute min max
+        min_max = np.percentile(df[cols].values, 5), np.percentile(df[cols].values, 95)
+        df.loc[:, cols] = (df.loc[:, cols] - min_max[0]) / (min_max[1] - min_max[0])
+        df[cols] = df[cols].clip(0, 1)
         return df
-
     def df_to_electrode_records_tensor(self, df: pd.DataFrame, to_mni_transform: vtkMRMLTransformNode,
-                                       require_mirror) -> torch.Tensor:
+                                       require_mirror) -> Tuple[torch.Tensor, List[str],torch.Tensor]:
         """
         Convert a dataframe to a tensor of electrode records.
         """
@@ -1199,8 +1225,14 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         result_np = np.vstack(
             [np.array([np.concatenate((row[0], [row[1]])) for row in df[[x + "XYZ", x]].values]) for x in cols])
 
+        # generate bitmask same shepe as tensor as first 4 recordings are definetely outside the stn
+        mask = np.ones(len(df.index))
+        mask[:4] = 0
+        result_mask = np.hstack([mask for _ in cols])
+        result_mask = torch.from_numpy(result_mask).type(torch.bool)
+
         tensor = torch.from_numpy(result_np).type(torch.float32)
-        return tensor
+        return tensor, cols, result_mask
 
         # return tensor
 
@@ -1335,7 +1367,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
     def predict_shift(self, mer_data: torch.Tensor,
                       original_shift: torch.Tensor,
-                      mesh: vtk.vtkPolyData):
+                      mesh: vtk.vtkPolyData, class_mask: torch.Tensor):
         """
         predict shift
         input:
@@ -1346,7 +1378,9 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         classes = self.classify_mers(mer_data)
 
-        return optimise_mer_signal(mer_data, original_shift, mesh, classes)
+        classes = classes * torch.unsqueeze(class_mask,1)
+
+        return optimise_mer_signal(mer_data, original_shift, mesh, classes), classes
 
         pass
 
@@ -1366,7 +1400,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         pass
 
-    def convert_to_slicer_transformation(self, shift, to_mni : vtkMRMLTransformNode, require_mirror):
+    def convert_to_slicer_transformation(self, shift,scalling, to_mni : vtkMRMLTransformNode, require_mirror):
         """
         convert the shift to the slicer transformation from Native to Native
         """
@@ -1383,9 +1417,16 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         # result shift     (to_mni^-1)*transl*to_mni
 
         shift_mat = np.eye(4)
-        shift_mat[:3, 3] = (-shift)
+        shift_mat[0,0] = scalling[0]
+        shift_mat[1,1] = scalling[1]
+        shift_mat[2,2] = scalling[2]
 
-        tmp1 = np.dot(np.linalg.inv(to_mni_array), shift_mat)
+
+        shift_mat2 = np.eye(4)
+        shift_mat2[:3, 3] = (-shift)
+
+        result_transform = np.dot(shift_mat,shift_mat2)
+        tmp1 = np.dot(np.linalg.inv(to_mni_array), result_transform)
         result = np.dot(tmp1, to_mni_array)
         transformNode = vtkMRMLLinearTransformNode()
         transformNode.SetName("shift")

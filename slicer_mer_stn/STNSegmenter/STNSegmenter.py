@@ -293,7 +293,10 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if storageNode is None:  # save node to temp folder and return storage node for it
             slicer.util.saveNode(node, str(Path(self.temp_workdir.name) / f"{node.GetName()}.nii.gz"))
             return node.GetStorageNode()
-        elif not storageNode.GetFileName().endswith(".nii.gz"):
+        elif (storageNode.GetFileName()) and not storageNode.GetFileName().endswith(".nii.gz"):
+            slicer.util.saveNode(node, str(Path(self.temp_workdir.name) / f"{node.GetName()}.nii.gz"))
+            return node.GetStorageNode()
+        elif not storageNode.GetFileName():
             slicer.util.saveNode(node, str(Path(self.temp_workdir.name) / f"{node.GetName()}.nii.gz"))
             return node.GetStorageNode()
         return storageNode
