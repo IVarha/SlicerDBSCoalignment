@@ -19,7 +19,7 @@ include(${Slicer_USE_FILE})
 
 #-----------------------------------------------------------------------------
 # Extension modules
-add_subdirectory(load_nifty)
+add_subdirectory(DBSShiftPrediction)
 add_subdirectory(STNSegmenter)
 add_subdirectory(LabelConverter)
 add_subdirectory(LabelConverter)

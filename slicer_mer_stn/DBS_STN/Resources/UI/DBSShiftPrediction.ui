@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>load_nifty</class>
- <widget class="qMRMLWidget" name="load_nifty">
+ <class>DBSShiftPrediction</class>
+ <widget class="qMRMLWidget" name="DBSShiftPrediction">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -159,7 +159,7 @@
  <resources/>
  <connections>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>outputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -175,7 +175,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>fix_im_registration</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -191,7 +191,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>reference_image_registrationVolumeSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -207,7 +207,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>invertedOutputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -223,7 +223,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>leftMarkupSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -239,7 +239,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>rightMarkupSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -255,7 +255,7 @@
    </hints>
   </connection>
     <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>leftMERFileSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -271,7 +271,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>rightMERFileSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -287,7 +287,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>textinputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -303,7 +303,7 @@
    </hints>
   </connection>
     <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>transform_inputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
@@ -319,7 +319,7 @@
    </hints>
   </connection>
   <connection>
-   <sender>load_nifty</sender>
+   <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>stn_inputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>

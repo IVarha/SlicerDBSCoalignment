@@ -662,8 +662,8 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
 
 
 
-            mesh1 = display_mesh(mesh_orig, "Mesh left")
-            mesh2 = display_mesh(mesh_mirr, "Mesh right")
+            mesh1 = display_mesh(mesh_orig, "STN right")
+            mesh2 = display_mesh(mesh_mirr, "STN left")
 
 
             return (mesh1, pts_left), (mesh2, pts_right)
