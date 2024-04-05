@@ -25,6 +25,7 @@ add_subdirectory(LabelConverter)
 add_subdirectory(LabelConverter)
 add_subdirectory(LabelConversion)
 add_subdirectory(LabelConversion)
+add_subdirectory(TextToMarkups)
 ## NEXT_MODULE
 
 #-----------------------------------------------------------------------------

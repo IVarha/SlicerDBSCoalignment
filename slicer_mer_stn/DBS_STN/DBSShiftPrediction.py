@@ -323,14 +323,19 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
 
     result_error = (weight * torch.abs(distances_to_mesh(new_points, mesh_pts))).sum()
 
-    if (weight > 0).sum() == 0:
-        result_error = 0
-    else:
-        result_error = result_error / (weight > 0).sum()
+    result_error = result_error / (weight > 0).sum()
 
-    result_error = result_error + (weight.sum())
+    result_error = result_error + weight.sum()
 
     return result_error
+
+
+def subgradient_optimisation_criterion(shift, function):
+    loss = function(shift)
+    loss.backward()
+    subgradient = shift.grad.sign()
+    shift.grad.zero_()  # Clear gradients for the next iteration
+    return subgradient
 
 
 def optimise_mer_signal(mer_data: torch.Tensor,
@@ -351,7 +356,7 @@ def optimise_mer_signal(mer_data: torch.Tensor,
             lambda1 * optimisation_criterion(mer_data, classes, shift=x, scalling=y, mesh=mesh, verbose=verbose)
             # +torch.linalg.norm(x)
             + (torch.linalg.norm(x) if torch.linalg.norm(x) > distance else 1 / torch.linalg.norm(x))
-                )
+    )
 
     x = origin_shift.clone().detach().requires_grad_(True)
     y = torch.tensor([1.0, 1.0, 1.0], requires_grad=True)
@@ -368,15 +373,16 @@ def optimise_mer_signal(mer_data: torch.Tensor,
     min_value = 1
     max_value = 1
 
+    op_ = lambda x: optimise_f(x, y, False)
     # Optimization loop
     for i in range(2000):
-        optimizer.zero_grad()  # Zero out the gradients
-        output = optimise_f(x, y)  # Compute the function value
-        output.backward()  # Compute gradients
-        y.grad[y < min_value] = 0
-        y.grad[y > max_value] = 0
+        subgradient = subgradient_optimisation_criterion(x, op_)
+        x.data -= learning_rate * subgradient
+        if i>0 and i % 100 == 0:
+            learning_rate = learning_rate * 0.9
+            # Print intermediate results every 100 iterations
+            print(f'Iteration {i}: {op_(x)}')
 
-        optimizer.step()  # Update parameters
     print("\n\n")
     print("Optimized value of x:", x, " y:", y)
     print("final estimated distance", torch.linalg.norm(x))
@@ -640,6 +646,11 @@ def check_side(bds):
         return False
 
 
+def _remove_previous_node(node_name):
+    if slicer.mrmlScene.GetFirstNodeByName(node_name):
+        slicer.mrmlScene.RemoveNode(slicer.mrmlScene.GetFirstNodeByName(node_name))
+
+
 def compute_text(classes, distance_to_target, columns):
     # extract the classes
     classes = classes.detach().numpy()
@@ -655,11 +666,9 @@ def compute_text(classes, distance_to_target, columns):
     res = pd.DataFrame(dict_cols)
     res['RecordingSiteDTT'] = distance_to_target
     # remove text node if exists
-    if slicer.mrmlScene.GetFirstNodeByName("LeadOR:Classes"):
-        slicer.mrmlScene.RemoveNode(slicer.mrmlScene.GetFirstNodeByName("LeadOR:Classes"))
 
     # create text node
-    text = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTextNode')
+    text = vtkMRMLTextNode()
     text.SetText(res.to_csv(index=False))
 
     return text
@@ -746,52 +755,16 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         ### add event when the text is changed
         # self.text.AddObserver(vtk.vtkCommand.ModifiedEvent, self.onTextModified)
 
-    def onTextModified(self, node, event):
-        df_text = self.logic.read_leadOR_txt(node)
-        # compute the NRMS
+    def onTextModified(self, node):
 
-        df_text = df_text.drop_duplicates(subset=["RecordingSiteDTT"])
-        df_text = self.logic.remove_abnormals_first(df_text)
-        df_text = self.logic.nrms_df_calculation(df_text)
-        # scale rms to [0,1]
-        df_text = self.logic.nrms_min_max_scale(df_text)
-        # compute tensor from the dataframe
-        result_tensor, mapping_columns, number_of_elecs = self.logic.df_to_electrode_records_tensor(df_text,
-                                                                                                    to_mni_transform=self.to_mni,
-                                                                                                    require_mirror=self.side)
-        # clone the tensor
-        unscalled_tensor = result_tensor.clone()
-
-        # rescale the tensor
-
-        result_tensor = self.logic.electrode_records_rescale(result_tensor)
-
-        # compute the shift
-        shift = self.logic.predict_initial_shift(result_tensor, self.pcas)
-
-        shift = (shift * 20 - 10).detach()
-
-        # refine shift
-        scalling = torch.tensor([1.0, 1.0, 1.0])
-
-        classes = self.logic.classify_mers_clean(unscalled_tensor, number_of_elecs)
-
-        (shift, scalling), classes = self.logic.predict_shift(unscalled_tensor, shift, self.mesh_copy,
-                                                              classes,
-                                                              lambda1=2.5,
-                                                              distance=0.3,
-                                                              lr=1e-4)
-        # remove the previous shift node
-
-        text_node = compute_text(classes, df_text['RecordingSiteDTT'].values, mapping_columns)
-        text_node.SetName("LeadOR:Classes")
-
-        self.logic.remove_previous_shift()
-
-        # convert the shift to the slicer transformation from Native to Native
-
-        converted_transform = self.logic.convert_to_slicer_transformation(shift, scalling, self.to_mni,
-                                                                          self.side)  # convert to slicer transformation
+        _remove_previous_node("LeadOR: Classes")
+        # compute shift transformation
+        res_transform, text_node = self.logic.predict_shift(node, self.side, self.to_mni, self.mesh_copy, self.pcas,
+                                                            lambda1=1.8, distance=0.3, learning_rate=0.01)
+        # create text node
+        text_node.SetName("LeadOR: Classes")
+        slicer.mrmlScene.AddNode(res_transform)
+        slicer.mrmlScene.AddNode(text_node)
 
     def onInputMeshSelected(self, node: vtkMRMLModelNode):
         self.mesh1 = node
@@ -1061,7 +1034,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             return
         except:
             pass
-        self.onTextModified(self.text, None)
+        self.onTextModified(self.text)
         self._remove_all_previous_copies()
         # self._copy_leadORIGTL_folder()
 
@@ -1408,7 +1381,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         num_records = classes.shape[0] // number_of_electrodes
         for el_i in range(number_of_electrodes):
             for pos in range(4):
-                classes[el_i * num_records + pos] = 0.0
+                classes[el_i * num_records + pos] = 0
 
         # filter wrong classes
         for el_i in range(number_of_electrodes):
@@ -1419,7 +1392,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
                 if classes[el_i * num_records + pos_of_recording] == 0 and classes[
                     el_i * num_records + pos_of_recording - 1] == 1 and classes[
                     el_i * num_records + pos_of_recording + 1] == 1:
-                    classes[el_i * num_records + pos_of_recording][0] = 1.0
+                    classes[el_i * num_records + pos_of_recording][0] = 1
         return classes
 
     def classify_mers(self, mer_data: torch.Tensor):
@@ -1431,9 +1404,9 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
             output = self.mer_classification_net(mer_data) > 0.5
         return output
 
-    def predict_shift(self, mer_data: torch.Tensor,
-                      original_shift: torch.Tensor,
-                      mesh: vtk.vtkPolyData, classes: torch.Tensor, lambda1=1.0, distance=0.2, lr=0.004):
+    def _predict_shift(self, mer_data: torch.Tensor,
+                       original_shift: torch.Tensor,
+                       mesh: vtk.vtkPolyData, classes: torch.Tensor, lambda1=1.0, distance=0.2, lr=0.004):
         """
         predict shift
         input:
@@ -1446,6 +1419,46 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
                                    learning_rate=lr), classes
 
         pass
+
+    def predict_shift(self, text_node: "vtkMRMLTextNode", side: bool,
+                      to_mni: vtkMRMLLinearTransformNode, mesh: vtk.vtkPolyData, pcas, lambda1, distance,
+                      learning_rate):
+
+        df_text = self.read_leadOR_txt(text_node)
+
+        df_text = df_text.drop_duplicates(subset=["RecordingSiteDTT"])
+
+        df_text = self.remove_abnormals_first(df_text)
+
+        df_text = self.nrms_df_calculation(df_text)
+
+        df_text = self.nrms_min_max_scale(df_text)
+
+
+        result_tensor, mapping_columns, num_of_elec = self.df_to_electrode_records_tensor(df_text,
+                                                                                          to_mni_transform=to_mni,
+                                                                                          require_mirror=side)
+        # note the result tensor is in mni scale and could be mirrored
+        unscalled_tensor = result_tensor.clone()
+
+        result_tensor = self.electrode_records_rescale(result_tensor)
+        print(result_tensor.shape)
+
+        shift = self.predict_initial_shift(result_tensor, pcas)
+
+        shift = (shift * 20 - 10).detach()
+        # markup_node = convert_tensor_to_markup_node(unscalled_tensor, side)
+        classes = self.classify_mers_clean(unscalled_tensor, num_of_elec)
+        (shift, scalling), classes = self._predict_shift(unscalled_tensor, shift, mesh, classes, lambda1, distance,
+                                                         learning_rate)
+
+        text_node_res = compute_text(classes, df_text['RecordingSiteDTT'].values, mapping_columns)
+
+        # logic.remove_previous_shift()
+        converted_transform = self.convert_to_slicer_transformation(shift, scalling, to_mni,
+                                                                    side)  # convert to slicer transformation
+
+        return converted_transform, text_node_res
 
     def create_mesh_copy(self, node: vtkMRMLModelNode):
         """
@@ -1493,7 +1506,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         transformNode = vtkMRMLLinearTransformNode()
         transformNode.SetName("shift")
         transformNode.SetMatrixTransformToParent(convert_to_vtk_matrix(result))
-        slicer.mrmlScene.AddNode(transformNode)
+
         return transformNode
         pass
 
