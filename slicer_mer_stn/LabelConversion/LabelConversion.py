@@ -8,6 +8,7 @@ import vtk
 import slicer
 from MRMLCorePython import vtkMRMLModelNode, vtkMRMLSegmentationNode, vtkMRMLLinearTransformNode, \
     vtkMRMLLabelMapVolumeNode
+from scipy.interpolate import RegularGridInterpolator
 from slicer.i18n import tr as _
 from slicer.i18n import translate
 from slicer.ScriptedLoadableModule import *
@@ -183,7 +184,7 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
     def onApplyConvert(self):
-        self.logic.convert_label(self.ui.textinputSelector.currentNode(),self.ui.toMNIInputSelector.currentNode(),
+        convert_label(self.ui.textinputSelector.currentNode(),self.ui.toMNIInputSelector.currentNode(),
                                  self.ui.outputSelector.currentNode())
         pass
 
@@ -360,6 +361,182 @@ def get_np_from_node(node :vtkMRMLLinearTransformNode):
     return np.array([[mt1.GetElement(i,j) for j in range(4)] for i in range(4)])
 
 
+def interpolate_3d_array(data, points):
+    """
+    Interpolates a 3D NumPy array at specified points using linear interpolation.
+
+    Parameters:
+        data (ndarray): The 3D NumPy array to be interpolated.
+        points (ndarray): An array of shape (N, 3) containing the coordinates of N points
+                          where interpolation is to be performed.
+
+    Returns:
+        ndarray: An array containing the interpolated values at the specified points.
+    """
+    # Create grid coordinates
+    x = np.arange(data.shape[0])
+    y = np.arange(data.shape[1])
+    z = np.arange(data.shape[2])
+
+    # Create the interpolator
+    interpolator = RegularGridInterpolator((x, y, z), data,bounds_error=False, fill_value=0)
+
+
+    # Perform interpolation
+    interpolated_values = interpolator(points)
+
+    return interpolated_values
+
+
+def vtk_image_to_numpy(image_data):
+    # Convert VTK image data to NumPy array
+    temp = vtk.util.numpy_support.vtk_to_numpy(image_data.GetPointData().GetScalars())
+    dims = image_data.GetDimensions()
+    numpy_data = temp.reshape(dims[::-1])  # Reversing the dimensions to match NumPy indexing order
+
+    return numpy_data.transpose(2, 1, 0)  # Reordering the dimensions to match Slicer's RAS coordinate system
+
+
+def compute_image_pts(vtkImage: vtkMRMLLabelMapVolumeNode, points: np.ndarray):
+    """
+    Compute the image at points
+    """
+    # image 2 numpy
+    ras_to_ijk = vtk.vtkMatrix4x4()
+    vtkImage.GetRASToIJKMatrix(ras_to_ijk)
+    numpy_array = vtk_image_to_numpy(vtkImage.GetImageData())
+    # convert points to ijk
+    ijk_points = np.array([np.array(ras_to_ijk.MultiplyPoint([point[0],point[1],point[2],1]))[:3] for point in points])
+    #print(ijk_points)
+    # interpolate
+    return interpolate_3d_array(numpy_array,ijk_points)
+
+
+def _compute_final_point(sphere_pt: np.ndarray, center:np.ndarray,
+                         label_image: vtkMRMLLabelMapVolumeNode, threshold):
+
+    """
+    compute final point in native space
+        input:
+        sphere_pt: point in native space
+        center: center of the label in native space
+    """
+
+    # get direction vector from pt to center of sphere
+    vect = center - sphere_pt
+    # normalize vector
+    d = np.linalg.norm(vect)
+    vect = vect / d
+
+    # generate points along the vector
+    points = np.array([sphere_pt + i * (d/100) * vect for i in range(100)])
+
+    # iterate through points and check if the value of the image is above threshold
+
+    values = compute_image_pts(label_image,points)
+    #print("values ",values)
+    #print(points)
+
+    # get the first point that is above threshold
+    for i in range(100):
+        if values[i] > threshold:
+            return points[i]
+    return points[-1]
+
+
+def _shrink_sphere_to_label(image_data : vtkMRMLLabelMapVolumeNode,
+                            sphere: vtk.vtkPolyData,
+                            to_mni: np.ndarray, center: np.array):
+    """
+    shrink sphere to label
+    image_data: vtkImageData in native space
+    sphere: vtk.vtkPolyData sphere in mni space
+    to_mni: transformation matrix from native to mni space
+    center: center of the label in native space
+    """
+
+    #get ras to ijk
+
+    from_mni = np.linalg.inv(to_mni)
+    slic_im = SlicerImage(image_data.GetImageData())
+    # iterate through all points of the sphere
+    all_points = sphere.GetPoints()
+    for i in range(sphere.GetNumberOfPoints()):
+        point = np.array(list(all_points.GetPoint(i)) + [1])
+        # transform point to native space
+        point = np.dot(from_mni,point)[:3]
+        # get the value of the image at the point
+
+        final_point = _compute_final_point(point,center,image_data,0.01)
+        all_points.SetPoint(i,final_point[0],final_point[1],final_point[2])
+    sphere.SetPoints(all_points)
+    return sphere
+
+
+def _generate_vtk_sphere(center, radius=10, number_of_divisions=2):
+    sphere = vtk.vtkSphereSource()
+    sphere.SetCenter(center[0],center[1],center[2])
+
+    sphere.SetRadius(radius)
+    sphere.Update()
+    or_mesh =  sphere.GetOutput()
+    # process triugh subdivision filter
+    subdivide = vtk.vtkLinearSubdivisionFilter()
+    subdivide.SetInputData(or_mesh)
+    subdivide.SetNumberOfSubdivisions(number_of_divisions)
+    subdivide.Update()
+    return subdivide.GetOutput()
+
+
+def _compute_mesh_from_label_im(label_image: vtkMRMLLabelMapVolumeNode, to_mni: vtkMRMLLinearTransformNode):
+
+    # compute center of a label
+    center = getCenterOfMass(label_image)
+    #print(center)
+    to_mni_mat = get_np_from_node(to_mni)
+
+    # transform center to MNI space
+
+    center = np.array([center[0],center[1],center[2],1])
+    center_mni = np.dot(to_mni_mat,center)[:3]
+    # generate sphere in mni
+    sphere = _generate_vtk_sphere(center_mni)
+
+    # shrink sphere to label
+
+    sphere = _shrink_sphere_to_label(label_image,sphere,to_mni_mat,center[:3])
+
+    return sphere
+
+
+def convert_label(segmentation_node : Union[vtkMRMLLabelMapVolumeNode,vtkMRMLModelNode,vtkMRMLSegmentationNode],
+                  toMNI: vtkMRMLLinearTransformNode, out_node: vtkMRMLModelNode):
+    """
+    read label from segmentation node  and shrink sphere  to label in MNI space and write to out_node
+    """
+
+    # read label from segmentation_node
+
+    if isinstance(segmentation_node,vtkMRMLLabelMapVolumeNode):
+
+
+        label_image : vtkImageData = segmentation_node.GetImageData()
+
+
+        #a = SlicerImage(label_image)
+
+        transform_ras_to_ijk = vtk.vtkMatrix4x4()
+        segmentation_node.GetIJKToRASMatrix(transform_ras_to_ijk)
+        transform_ras_to_ijk.Invert()
+
+        resulting_mesh = _compute_mesh_from_label_im(segmentation_node,toMNI)
+        # transform label to MNI space
+    else:
+        return
+    out_node.SetAndObservePolyData(resulting_mesh)
+    #label = segmentation_node.GetSegmentation().GetBinaryLabelmapRepresentation("label")
+
+
 class LabelConversionLogic(ScriptedLoadableModuleLogic):
     """This class should implement all the actual
     computation done by your module.  The interface
@@ -376,145 +553,6 @@ class LabelConversionLogic(ScriptedLoadableModuleLogic):
 
     def getParameterNode(self):
         return LabelConversionParameterNode(super().getParameterNode())
-
-    def _generate_vtk_sphere(self, center, radius=10,number_of_divisions=2):
-        sphere = vtk.vtkSphereSource()
-        sphere.SetCenter(center[0],center[1],center[2])
-
-        sphere.SetRadius(radius)
-        sphere.Update()
-        or_mesh =  sphere.GetOutput()
-        # process triugh subdivision filter
-        subdivide = vtk.vtkLinearSubdivisionFilter()
-        subdivide.SetInputData(or_mesh)
-        subdivide.SetNumberOfSubdivisions(number_of_divisions)
-        subdivide.Update()
-        return subdivide.GetOutput()
-
-
-    def _compute_final_point(self, sphere_pt: np.ndarray, center:np.ndarray,
-                             label_image: SlicerImage, threshold,ras_to_ijk: vtk.vtkMatrix4x4):
-
-        """
-        compute final point in native space
-            input:
-            sphere_pt: point in native space
-            center: center of the label in native space
-        """
-
-        # get direction vector from pt to center of sphere
-        vect = center - sphere_pt
-        # normalize vector
-        d = np.linalg.norm(vect)
-        vect = vect / d
-
-        # generate points along the vector
-        points = np.array([sphere_pt + i * (d/100) * vect for i in range(100)])
-
-        # iterate through points and check if the value of the image is above threshold
-
-        values = label_image.compute_image_at_pts(points,ras_to_ijk)
-        #print(values)
-        #print(points)
-
-        # get the first point that is above threshold
-        for i in range(100):
-            if values[i] > threshold:
-                return points[i]
-
-
-
-
-
-
-    def _shrink_sphere_to_label(self, image_data : vtkMRMLLabelMapVolumeNode,
-                                sphere: vtk.vtkPolyData,
-                                to_mni: np.ndarray,center: np.array,
-                                ras_to_ijk: vtk.vtkMatrix4x4):
-        """
-        shrink sphere to label
-        image_data: vtkImageData in native space
-        sphere: vtk.vtkPolyData sphere in mni space
-        to_mni: transformation matrix from native to mni space
-        center: center of the label in native space
-        """
-
-
-        from_mni = np.linalg.inv(to_mni)
-        slic_im = SlicerImage(image_data.GetImageData())
-        # iterate through all points of the sphere
-        all_points = sphere.GetPoints()
-        for i in range(sphere.GetNumberOfPoints()):
-            point = np.array(list(all_points.GetPoint(i)) + [1])
-            # transform point to native space
-            point = np.dot(from_mni,point)[:3]
-            # get the value of the image at the point
-
-            final_point = self._compute_final_point(point,center,slic_im,0.4,ras_to_ijk)
-            all_points.SetPoint(i,final_point[0],final_point[1],final_point[2])
-        sphere.SetPoints(all_points)
-        return sphere
-
-
-
-
-
-
-    def _compute_mesh_from_label_im(self, label_image: vtkMRMLLabelMapVolumeNode,to_mni: vtkMRMLLinearTransformNode):
-
-        # compute center of a label
-        center = getCenterOfMass(label_image)
-        print(center)
-        to_mni_mat = get_np_from_node(to_mni)
-
-        # transform center to MNI space
-
-        center = np.array([center[0],center[1],center[2],1])
-        center_mni = np.dot(to_mni_mat,center)[:3]
-        # generate sphere in mni
-        sphere = self._generate_vtk_sphere(center_mni)
-
-        # shrink sphere to label
-        ras2ijk = vtk.vtkMatrix4x4()
-        label_image.GetRASToIJKMatrix(ras2ijk)
-        sphere = self._shrink_sphere_to_label(label_image,sphere,to_mni_mat,center[:3],ras2ijk)
-
-        return sphere
-
-
-
-
-    def convert_label(self, segmentation_node : Union[vtkMRMLLabelMapVolumeNode,vtkMRMLModelNode,vtkMRMLSegmentationNode],
-                      toMNI: vtkMRMLLinearTransformNode, out_node: vtkMRMLModelNode):
-        """
-        read label from segmentation node  and shrink sphere  to label in MNI space and write to out_node
-        """
-
-        # read label from segmentation_node
-
-        if isinstance(segmentation_node,vtkMRMLLabelMapVolumeNode):
-
-
-            label_image : vtkImageData = segmentation_node.GetImageData()
-
-
-            a = SlicerImage(label_image)
-
-            transform_ras_to_ijk = vtk.vtkMatrix4x4()
-            segmentation_node.GetIJKToRASMatrix(transform_ras_to_ijk)
-            transform_ras_to_ijk.Invert()
-
-            resulting_mesh = self._compute_mesh_from_label_im(segmentation_node,toMNI)
-            # transform label to MNI space
-        else:
-            return
-        out_node.SetAndObservePolyData(resulting_mesh)
-        #label = segmentation_node.GetSegmentation().GetBinaryLabelmapRepresentation("label")
-
-
-
-
-
 
     def process(self,
                 inputVolume: vtkMRMLScalarVolumeNode,
