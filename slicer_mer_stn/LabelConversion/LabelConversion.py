@@ -386,6 +386,7 @@ def interpolate_3d_array(data, points):
     interpolated_values = interpolator(points)
 
     return interpolated_values
+# increase the size 2x in each dimension ex 256x256x256 to 512x512x512 for vtkimagedata
 
 
 def vtk_image_to_numpy(image_data):
@@ -394,7 +395,14 @@ def vtk_image_to_numpy(image_data):
     dims = image_data.GetDimensions()
     numpy_data = temp.reshape(dims[::-1])  # Reversing the dimensions to match NumPy indexing order
 
-    return numpy_data.transpose(2, 1, 0)  # Reordering the dimensions to match Slicer's RAS coordinate system
+    result =  numpy_data.transpose(2, 1, 0)  # Reordering the dimensions to match Slicer's RAS coordinate system
+
+    # increase the size 2x in each dimension ex 256x256x256 to 512x512x512
+    result = np.repeat(result, 2, axis=0)
+    result = np.repeat(result, 2, axis=1)
+    result = np.repeat(result, 2, axis=2)
+
+    return result
 
 
 def compute_image_pts(vtkImage: vtkMRMLLabelMapVolumeNode, points: np.ndarray):
@@ -406,6 +414,13 @@ def compute_image_pts(vtkImage: vtkMRMLLabelMapVolumeNode, points: np.ndarray):
     vtkImage.GetRASToIJKMatrix(ras_to_ijk)
     numpy_array = vtk_image_to_numpy(vtkImage.GetImageData())
     # convert points to ijk
+    #convert rastoijk to new ijk
+    mat2x = vtk.vtkMatrix4x4()
+    mat2x.SetElement(0,0,2)
+    mat2x.SetElement(1,1,2)
+    mat2x.SetElement(2,2,2)
+    ras_to_ijk.Multiply4x4(mat2x,ras_to_ijk,ras_to_ijk)
+    #print(ras_to_ijk)
     ijk_points = np.array([np.array(ras_to_ijk.MultiplyPoint([point[0],point[1],point[2],1]))[:3] for point in points])
     #print(ijk_points)
     # interpolate
@@ -428,8 +443,9 @@ def _compute_final_point(sphere_pt: np.ndarray, center:np.ndarray,
     d = np.linalg.norm(vect)
     vect = vect / d
 
+    num_pts_to_check = 150
     # generate points along the vector
-    points = np.array([sphere_pt + i * (d/100) * vect for i in range(100)])
+    points = np.array([sphere_pt + i * (d/num_pts_to_check) * vect for i in range(num_pts_to_check)])
 
     # iterate through points and check if the value of the image is above threshold
 
@@ -438,7 +454,7 @@ def _compute_final_point(sphere_pt: np.ndarray, center:np.ndarray,
     #print(points)
 
     # get the first point that is above threshold
-    for i in range(100):
+    for i in range(num_pts_to_check):
         if values[i] > threshold:
             return points[i]
     return points[-1]
