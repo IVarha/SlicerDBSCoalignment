@@ -49,9 +49,9 @@ class TextToMarkups(ScriptedLoadableModule):
 
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = _("TextToMarkups")  # TODO: make this more human readable by adding spaces
+        self.parent.title = _("Text To Markups")  # TODO: make this more human readable by adding spaces
         # TODO: set categories (folders where the module shows up in the module selector)
-        self.parent.categories = [translate("qSlicerAbstractCoreModule", "Examples")]
+        self.parent.categories = [translate("qSlicerAbstractCoreModule", "DBS")]
         self.parent.dependencies = []  # TODO: add here list of module names that this module requires
         self.parent.contributors = ["John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
         # TODO: update with short description of the module and a link to online module documentation
@@ -264,12 +264,18 @@ class TextToMarkupsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.ui.applyButton.text = "Processing..."
         logic = DBSShiftPrediction.MRI_MERLogic()
+        # remove previous markup node with name electrodes
+
+        try:
+            slicer.mrmlScene.RemoveNode(slicer.mrmlScene.GetFirstNodeByName("Electrodes"))
+        except:
+            pass
         df_text = logic.read_leadOR_txt(self._parameterNode.inputVolume)
 
         df_text = df_text.drop_duplicates(subset=["RecordingSiteDTT"])
 
-        convert_to_markup_node(df_text)
-
+        x = convert_to_markup_node(df_text)
+        x.SetName("Electrodes")
 
 
         # with slicer.util.tryWithErrorDisplay(_("Failed to compute results."), waitCursor=True):

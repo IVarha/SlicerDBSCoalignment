@@ -69,7 +69,7 @@
         </property>
 
         <property name="SlicerParameterName" stdset="0">
-         <string>inputVolume</string>
+         <string>inputFeatureText</string>
         </property>
        </widget>
       </item>
@@ -92,7 +92,7 @@
         </property>
 
         <property name="SlicerParameterName" stdset="0">
-         <string>inputVolume</string>
+         <string>inputMesh</string>
         </property>
        </widget>
       </item>
