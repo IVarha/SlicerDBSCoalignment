@@ -252,10 +252,10 @@ def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Te
     # print(current_output.shape)
     for i in range(len(current_output)):
         if current_output[i] != labeled_points[i]:  # not equal
-            if labeled_points[i] == 1:
-                x.append(1)
-            else:
+            if labeled_points[i] == 1: # if labeled as inside the mesh but put to outside
                 x.append(2)
+            else: # if labeled as outside the mesh but
+                x.append(1)
         else:
             x.append(0)
 
@@ -298,12 +298,15 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
     Returns:
         torch.Tensor: The criterion value.
     """
-
+    if not isinstance(shift, torch.Tensor):
+        shift = torch.tensor(shift, dtype=torch.float32)
+        scalling = torch.tensor(scalling, dtype=torch.float32)
     orig_points = orig_points[:, :3]
+    mean_op = orig_points.mean(dim=0)
     if isinstance(orig_points, np.ndarray):
         orig_points = torch.from_numpy(orig_points)
     # print(orig_points)
-    new_points = orig_points * scalling - shift
+    new_points = (orig_points - mean_op)*scalling - shift + mean_op
 
     points_inside_posttrans = check_points_inside_vtk_mesh(mesh, new_points.detach().numpy())
 
@@ -323,19 +326,21 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
 
     result_error = (weight * torch.abs(distances_to_mesh(new_points, mesh_pts))).sum()
 
-    result_error = result_error / (weight > 0).sum()
+    result_error = result_error/ weight.shape[0]# / (weight > 0).sum()
 
-    result_error = result_error + weight.sum()
+    result_error = result_error #+ weight.sum()
 
-    return result_error
+    return result_error.item()
 
 
-def subgradient_optimisation_criterion(shift, function):
-    loss = function(shift)
+def subgradient_optimisation_criterion(shift,scaling, function):
+    loss = function(shift,scaling)
     loss.backward()
-    subgradient = shift.grad.sign()
+    subgradient_shift = shift.grad.sign()
+    subgradient_scaling = scaling.grad.sign()
     shift.grad.zero_()  # Clear gradients for the next iteration
-    return subgradient
+    scaling.grad.zero_()  # Clear gradients for the next iteration
+    return subgradient_shift, subgradient_scaling
 
 
 def optimise_mer_signal(mer_data: torch.Tensor,
@@ -353,42 +358,68 @@ def optimise_mer_signal(mer_data: torch.Tensor,
     # convert mer_data to torch tensor
 
     optimise_f = lambda x, y, verbose=False: (
-            lambda1 * optimisation_criterion(mer_data, classes, shift=x, scalling=y, mesh=mesh, verbose=verbose)
-            # +torch.linalg.norm(x)
-            + (torch.linalg.norm(x) if torch.linalg.norm(x) > distance else 1 / torch.linalg.norm(x))
-    )
+             lambda1* optimisation_criterion(mer_data, classes, shift=x, scalling=y, mesh=mesh, verbose=verbose)
+            + np.linalg.norm(x)
+            + distance*(np.linalg.norm(y - 1))
+            #+ (torch.linalg.norm(x) if torch.linalg.norm(x) > distance else 1 / torch.linalg.norm(x))
+    ).item()
 
     x = origin_shift.clone().detach().requires_grad_(True)
     y = torch.tensor([1.0, 1.0, 1.0], requires_grad=True)
     print("------------------------------")
     print("Origin estimated value of shift:", x)
 
-    print("Origin estimated value of the function:", optimise_f(x, y, True).item())
 
-    print("original estimated distance", torch.linalg.norm(x))
+
+
+    #
 
     # Define the optimizer
-    optimizer = torch.optim.RMSprop([x], lr=learning_rate)
 
-    min_value = 1
-    max_value = 1
+    min_value = 0.7
+    max_value = 1.3
 
-    op_ = lambda x: optimise_f(x, y, False)
-    # Optimization loop
-    for i in range(2000):
-        subgradient = subgradient_optimisation_criterion(x, op_)
-        x.data -= learning_rate * subgradient
-        if i>0 and i % 100 == 0:
-            learning_rate = learning_rate * 0.9
-            # Print intermediate results every 100 iterations
-            print(f'Iteration {i}: {op_(x)}')
+    op_ = lambda x,v=False: optimise_f(x[:3], x[3:], v)
+    x = origin_shift.clone().detach().numpy().reshape((3)).tolist() + [1.0, 1.0, 1.0]
+    x = np.array(x)
+    print("Origin estimated value of the function:", op_(x,True))
+    print("Origin estimated distance", np.linalg.norm(x[:3]))
+    from scipy import optimize as opt
 
+    bounds = [(-3, 3), (-3, 3), (-3, 3),
+              (min_value, max_value), (min_value, max_value), (min_value, max_value)]
+
+    res = opt.differential_evolution(op_, bounds, disp=True,x0=x,polish=False,seed=42)
+    # res = opt.minimize(op_, res.x,method='Powell',options={'disp': True},
+    #                  bounds=bounds)
+
+    x = res.x
+    print(res)
     print("\n\n")
     print("Optimized value of x:", x, " y:", y)
-    print("final estimated distance", torch.linalg.norm(x))
-    print("Optimized value of the function:", optimise_f(x, y, True).item())
+    print("final estimated distance", np.linalg.norm(x[:3]))
+    print("Optimized value of the function:", op_(torch.from_numpy(x),True))
     print("------------------------------")
-    return x.detach().numpy(), y.detach().numpy()
+
+    return x[:3], torch.tensor([1.0, 1.0, 1.0], requires_grad=True).detach().numpy()
+    # # Optimization loop
+    # for i in range(2000):
+    #     subgradient = subgradient_optimisation_criterion(x,y, op_)
+    #     x.data -= learning_rate * subgradient[0]
+    #     y.data -= learning_rate * subgradient[1]
+    #     # clip the values
+    #     y.data = torch.clamp(y.data, min_value, max_value)
+    #     if i>0 and i % 100 == 0:
+    #         learning_rate = learning_rate * 0.9
+    #         # Print intermediate results every 100 iterations
+    #         print(f'Iteration {i}: {op_(x,y)}')
+    #
+    # print("\n\n")
+    # print("Optimized value of x:", x, " y:", y)
+    # print("final estimated distance", torch.linalg.norm(x))
+    # print("Optimized value of the function:", optimise_f(x, y, True).item())
+    # print("------------------------------")
+    # return x.detach().numpy(),torch.tensor([1.0, 1.0, 1.0], requires_grad=True).detach().numpy() #y.detach().numpy()
 
 
 #
@@ -488,11 +519,10 @@ class DBSShiftPredictionParameterNode:
     thresholdedVolume - The output volume that will contain the thresholded volume.
     invertedVolume - The output volume that will contain the inverted thresholded volume.
     """
-    inputVolume: vtkMRMLScalarVolumeNode
-    imageThreshold: Annotated[float, WithinRange(-100, 500)] = 100
-    invertThreshold: bool = False
-    thresholdedVolume: vtkMRMLScalarVolumeNode
-    invertedVolume: vtkMRMLScalarVolumeNode
+    inputVolume: vtkMRMLLinearTransformNode
+    inputFeatureText: vtkMRMLTextNode
+    inputMesh: vtkMRMLModelNode
+
 
 
 #
@@ -697,7 +727,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.intensity_normalisation_done = False
         self.wm_seg_done = False
         self.logic: MRI_MERLogic = None
-        self._parameterNode = None
+        self._parameterNode : DBSShiftPredictionParameterNode = None
         self._parameterNodeGuiTag = None
 
     def setup(self) -> None:
@@ -731,7 +761,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # Buttons
         # self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
         self.ui.stn_inputSelector.currentNodeChanged.connect(self.onInputMeshSelected)
-        self.ui.textinputSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.onInputTextSelected)
+        self.ui.textinputSelector.currentNodeChanged.connect( self.onInputTextSelected)
         self.ui.transform_inputSelector.currentNodeChanged.connect(self.onInputTransformSelected)
         self.ui.merFinalButton.clicked.connect(self.on_calculate_shift)
         # self.ui.merApplyTransformation.clicked.connect(self.apply_transformation_mer)
@@ -751,6 +781,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
     def onInputTextSelected(self, node: vtkMRMLTextNode):
         self.text = node
+        print('Text selected')
         #
         ### add event when the text is changed
         # self.text.AddObserver(vtk.vtkCommand.ModifiedEvent, self.onTextModified)
@@ -760,7 +791,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         _remove_previous_node("LeadOR: Classes")
         # compute shift transformation
         res_transform, text_node = self.logic.predict_shift(node, self.side, self.to_mni, self.mesh_copy, self.pcas,
-                                                            lambda1=1.8, distance=0.3, learning_rate=0.01)
+                                                            lambda1=100, distance=20, learning_rate=0.01)
         # create text node
         text_node.SetName("LeadOR: Classes")
         slicer.mrmlScene.AddNode(res_transform)
@@ -840,28 +871,39 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # Parameter node stores all user choices in parameter values, node selections, etc.
         # so that when the scene is saved and reloaded, these settings are restored.
 
-        # self.setParameterNode(self.logic.getParameterNode())
+        self.setParameterNode(self.logic.getParameterNode())
 
         # Select default input nodes if nothing is selected yet to save a few clicks for the user
-        # if not self._parameterNode.inputVolume:
-        #     firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
-        #     if firstVolumeNode:
-        #         self._parameterNode.inputVolume = firstVolumeNode
+        if not self._parameterNode.inputVolume:
+            firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+            if firstVolumeNode:
+                self._parameterNode.inputVolume = firstVolumeNode
 
     def setParameterNode(self, inputParameterNode: Optional[DBSShiftPredictionParameterNode]) -> None:
         """
         Set and observe parameter node.
         Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
         """
+        if self._parameterNode:
+            self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
+            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        self._parameterNode = inputParameterNode
+        if self._parameterNode:
+            # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
+            # ui element that needs connection.
+            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
+            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+            self._checkCanApply()
         pass
 
+
     def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.thresholdedVolume:
-            self.ui.applyButton.toolTip = "Compute output volume"
-            self.ui.applyButton.enabled = True
+        if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.inputFeatureText and self._parameterNode.inputMesh:
+            self.ui.merFinalButton.toolTip = "Compute output volume"
+            self.ui.merFinalButton.enabled = True
         else:
-            self.ui.applyButton.toolTip = "Select input and output volume nodes"
-            self.ui.applyButton.enabled = False
+            self.ui.merFinalButton.toolTip = "Select input and output volume nodes"
+            self.ui.merFinalButton.enabled = False
 
     def popup_window(self):
         message_box = qt.QMessageBox()
@@ -1039,12 +1081,23 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # self._copy_leadORIGTL_folder()
 
         # self.copy_leador_electrodes()
-
-        self.apply_transformation_mer(slicer.util.getNode('shift'))
+        try:
+            self.apply_transformation_mer(slicer.util.getNode('shift'))
+        except:
+            pass
+        try:
+            el_nodes = slicer.util.getNode("Electrodes")
+            el_nodes.SetAndObserveTransformNodeID(slicer.util.getNode('shift').GetID())
+        except Exception as e:
+            print(e)
+            pass
         print("SHIFTED")
         # Compute the shift
 
         # self.logic.shift_estimation(self.left_e_rec, self.right_e_rec, self.pts_left, self.pts_right)
+        pass
+
+    def apply_transformation_markups(self, param):
         pass
 
 
@@ -1179,6 +1232,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         # compute means
         mean = df.iloc[1:5][cols].mean()
+        print(mean)
         # compute nrms
         df[cols] = df[cols] / mean
 
@@ -1191,7 +1245,8 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
                 cols.append(col)
 
             # compute min max
-        min_max = np.percentile(df[cols].values, 5), np.percentile(df[cols].values, 95)
+        min_max = np.percentile(df[cols].values, 15), np.percentile(df[cols].values, 85)
+        print(min_max)
         df.loc[:, cols] = (df.loc[:, cols] - min_max[0]) / (min_max[1] - min_max[0])
         df[cols] = df[cols].clip(0, 1)
         return df
@@ -1434,6 +1489,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         df_text = self.nrms_min_max_scale(df_text)
 
+        print(df_text[[x for x in df_text.columns if not x.endswith('XYZ') and x != 'RecordingSiteDTT']])
 
         result_tensor, mapping_columns, num_of_elec = self.df_to_electrode_records_tensor(df_text,
                                                                                           to_mni_transform=to_mni,
@@ -1447,9 +1503,11 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         shift = self.predict_initial_shift(result_tensor, pcas)
 
         shift = (shift * 20 - 10).detach()
+
         # markup_node = convert_tensor_to_markup_node(unscalled_tensor, side)
         classes = self.classify_mers_clean(unscalled_tensor, num_of_elec)
-        (shift, scalling), classes = self._predict_shift(unscalled_tensor, shift, mesh, classes, lambda1, distance,
+        (shift, scalling), classes = self._predict_shift(unscalled_tensor, torch.Tensor([0.0,0.0,0.0]),#shift,
+                                                         mesh, classes, lambda1, distance,
                                                          learning_rate)
 
         text_node_res = compute_text(classes, df_text['RecordingSiteDTT'].values, mapping_columns)

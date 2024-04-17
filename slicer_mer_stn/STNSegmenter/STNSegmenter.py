@@ -223,6 +223,20 @@ class STNSegmenterParameterNode:
 #
 
 
+def check_storage_node(node: vtkMRMLScalarVolumeNode, temp_workdir: tempfile.TemporaryDirectory) -> vtkMRMLVolumeArchetypeStorageNode:
+    storageNode = node.GetStorageNode()
+    if storageNode is None:  # save node to temp folder and return storage node for it
+        slicer.util.saveNode(node, str(Path(temp_workdir.name) / f"{node.GetName()}.nii.gz"))
+        return node.GetStorageNode()
+    elif (storageNode.GetFileName()) and not storageNode.GetFileName().endswith(".nii.gz"):
+        slicer.util.saveNode(node, str(Path(temp_workdir.name) / f"{node.GetName()}.nii.gz"))
+        return node.GetStorageNode()
+    elif not storageNode.GetFileName():
+        slicer.util.saveNode(node, str(Path(temp_workdir.name) / f"{node.GetName()}.nii.gz"))
+        return node.GetStorageNode()
+    return storageNode
+
+
 class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -288,29 +302,16 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.temp_workdir = tempfile.TemporaryDirectory()
         print(self.temp_workdir.name)
 
-    def check_storage_node(self, node: vtkMRMLScalarVolumeNode):
-        storageNode = node.GetStorageNode()
-        if storageNode is None:  # save node to temp folder and return storage node for it
-            slicer.util.saveNode(node, str(Path(self.temp_workdir.name) / f"{node.GetName()}.nii.gz"))
-            return node.GetStorageNode()
-        elif (storageNode.GetFileName()) and not storageNode.GetFileName().endswith(".nii.gz"):
-            slicer.util.saveNode(node, str(Path(self.temp_workdir.name) / f"{node.GetName()}.nii.gz"))
-            return node.GetStorageNode()
-        elif not storageNode.GetFileName():
-            slicer.util.saveNode(node, str(Path(self.temp_workdir.name) / f"{node.GetName()}.nii.gz"))
-            return node.GetStorageNode()
-        return storageNode
-
     def onApplyPreprocessing(self) -> None:
         print("start on appl")
 
-        sn1 = self.check_storage_node(self.t1_node)
-        sn2 = self.check_storage_node(self.t2_node)
+        sn1 = check_storage_node(self.t1_node,self.temp_workdir)
+        sn2 = check_storage_node(self.t2_node,self.temp_workdir)
         print(sn1.GetFileName())
         print(sn2.GetFileName())
 
-        self.logic.coregistration_t2_t1(self.t1_node.GetStorageNode()
-                                        , t2=self.t2_node.GetStorageNode(),
+        self.logic.coregistration_t2_t1(sn1
+                                        , t2=sn2,
                                         out_name=str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
 
         # load t2 coregistered image
@@ -338,6 +339,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyWMSeg(self) -> None:
         print("start on onApplyWMSeg")
+
         slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
                                              out_folder=self.temp_workdir.name)
         self.wm_seg_done = True
@@ -367,7 +369,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def brain_extraction(self):
 
-        self.logic.brain_extraction(self.check_storage_node(self.t1_node), self.temp_workdir.name)
+        self.logic.brain_extraction(check_storage_node(self.t1_node,self.temp_workdir), self.temp_workdir.name)
 
         t1_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t1.nii.gz"))
 
@@ -599,7 +601,8 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
             out_folder=out_folder)
         ((Path(out_folder) / "result.0.nii.gz")
          .rename((out_name)))
-
+    def wm_segmentation(self, t1: str, out_folder: str) -> None:
+        slicer_preprocessing.wm_segmentation(t1, out_folder)
     def intensity_normalisation(self, out_folder: str) -> None:
         slicer_preprocessing.intensity_normalisation(out_folder)
 
