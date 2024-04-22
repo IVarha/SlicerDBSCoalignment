@@ -286,7 +286,7 @@ def distances_to_mesh(points, mesh_vertices):
     return min_distances
 
 
-def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPolyData, verbose=False):
+def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPolyData, verbose=False,return_weight=False):
     """
     Calculate the criterion value for a given set of original points, in_out values, shift vector, and mesh.
     Args:
@@ -329,7 +329,8 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
     result_error = result_error/ weight.shape[0]# / (weight > 0).sum()
 
     result_error = result_error #+ weight.sum()
-
+    if return_weight:
+        return ((weight > 0).sum()).item()
     return result_error.item()
 
 
@@ -400,26 +401,9 @@ def optimise_mer_signal(mer_data: torch.Tensor,
     print("final estimated distance", np.linalg.norm(x[:3]))
     print("Optimized value of the function:", op_(torch.from_numpy(x),True))
     print("------------------------------")
+    final_electrodes_number = optimisation_criterion(mer_data, classes, shift=x[:3], scalling=x[3:], mesh=mesh,return_weight=True)
 
-    return x[:3], torch.tensor([1.0, 1.0, 1.0], requires_grad=True).detach().numpy()
-    # # Optimization loop
-    # for i in range(2000):
-    #     subgradient = subgradient_optimisation_criterion(x,y, op_)
-    #     x.data -= learning_rate * subgradient[0]
-    #     y.data -= learning_rate * subgradient[1]
-    #     # clip the values
-    #     y.data = torch.clamp(y.data, min_value, max_value)
-    #     if i>0 and i % 100 == 0:
-    #         learning_rate = learning_rate * 0.9
-    #         # Print intermediate results every 100 iterations
-    #         print(f'Iteration {i}: {op_(x,y)}')
-    #
-    # print("\n\n")
-    # print("Optimized value of x:", x, " y:", y)
-    # print("final estimated distance", torch.linalg.norm(x))
-    # print("Optimized value of the function:", optimise_f(x, y, True).item())
-    # print("------------------------------")
-    # return x.detach().numpy(),torch.tensor([1.0, 1.0, 1.0], requires_grad=True).detach().numpy() #y.detach().numpy()
+    return x[:3], torch.tensor([1.0, 1.0, 1.0], requires_grad=True).detach().numpy(), final_electrodes_number
 
 
 #
@@ -790,8 +774,27 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         _remove_previous_node("LeadOR: Classes")
         # compute shift transformation
-        res_transform, text_node = self.logic.predict_shift(node, self.side, self.to_mni, self.mesh_copy, self.pcas,
-                                                            lambda1=100, distance=20, learning_rate=0.01)
+        #try multiple runs if fails
+        params = [ [20,10],
+                   [50,10],
+                   [100,10],
+                   [50,6]]
+        result_transforms = {}
+        mark = False
+        for param in params:
+            res_transform, text_node, num_elecs= self.logic.predict_shift(node, self.side, self.to_mni, self.mesh_copy, self.pcas,
+                                                                lambda1=param[0], distance=param[1], learning_rate=0.01)
+            if num_elecs < 10:
+                mark = True
+                break
+            if num_elecs in params:
+                pass
+            else:
+                result_transforms[num_elecs] = [res_transform, text_node]
+        if not mark:
+            num_elecs = min(result_transforms.keys())
+            res_transform, text_node = result_transforms[num_elecs]
+
         # create text node
         text_node.SetName("LeadOR: Classes")
         slicer.mrmlScene.AddNode(res_transform)
@@ -1506,9 +1509,9 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         # markup_node = convert_tensor_to_markup_node(unscalled_tensor, side)
         classes = self.classify_mers_clean(unscalled_tensor, num_of_elec)
-        (shift, scalling), classes = self._predict_shift(unscalled_tensor, torch.Tensor([0.0,0.0,0.0]),#shift,
-                                                         mesh, classes, lambda1, distance,
-                                                         learning_rate)
+        (shift, scalling,final_el_nums), classes = self._predict_shift(unscalled_tensor, torch.Tensor([0.0,0.0,0.0]),#shift,
+                                                             mesh, classes, lambda1, distance,
+                                                             learning_rate)
 
         text_node_res = compute_text(classes, df_text['RecordingSiteDTT'].values, mapping_columns)
 
@@ -1516,7 +1519,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         converted_transform = self.convert_to_slicer_transformation(shift, scalling, to_mni,
                                                                     side)  # convert to slicer transformation
 
-        return converted_transform, text_node_res
+        return converted_transform, text_node_res, final_el_nums
 
     def create_mesh_copy(self, node: vtkMRMLModelNode):
         """

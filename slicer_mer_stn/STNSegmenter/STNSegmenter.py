@@ -223,7 +223,8 @@ class STNSegmenterParameterNode:
 #
 
 
-def check_storage_node(node: vtkMRMLScalarVolumeNode, temp_workdir: tempfile.TemporaryDirectory) -> vtkMRMLVolumeArchetypeStorageNode:
+def check_storage_node(node: vtkMRMLScalarVolumeNode,
+                       temp_workdir: tempfile.TemporaryDirectory) -> vtkMRMLVolumeArchetypeStorageNode:
     storageNode = node.GetStorageNode()
     if storageNode is None:  # save node to temp folder and return storage node for it
         slicer.util.saveNode(node, str(Path(temp_workdir.name) / f"{node.GetName()}.nii.gz"))
@@ -305,8 +306,8 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onApplyPreprocessing(self) -> None:
         print("start on appl")
 
-        sn1 = check_storage_node(self.t1_node,self.temp_workdir)
-        sn2 = check_storage_node(self.t2_node,self.temp_workdir)
+        sn1 = check_storage_node(self.t1_node, self.temp_workdir)
+        sn2 = check_storage_node(self.t2_node, self.temp_workdir)
         print(sn1.GetFileName())
         print(sn2.GetFileName())
 
@@ -369,7 +370,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def brain_extraction(self):
 
-        self.logic.brain_extraction(check_storage_node(self.t1_node,self.temp_workdir), self.temp_workdir.name)
+        self.logic.brain_extraction(check_storage_node(self.t1_node, self.temp_workdir), self.temp_workdir.name)
 
         t1_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t1.nii.gz"))
 
@@ -383,7 +384,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         ## add mni^-1 transformation to the mesh nodes
 
-        #invert tranform node
+        # invert tranform node
         inverted_transform = slicer.vtkMRMLTransformNode()
         inverted_transform.SetName("to_mni_inverted")
         mt1 = vtk.vtkMatrix4x4()
@@ -391,12 +392,11 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.transform_node.GetMatrixTransformFromParent(mt1)
         inverted_transform.SetMatrixTransformToParent(mt1)
         slicer.mrmlScene.AddNode(inverted_transform)
-        #inverted_transform.SetMatrixTransformToParent(self.transform_node.GetMatrixTransformToParent())
+        # inverted_transform.SetMatrixTransformToParent(self.transform_node.GetMatrixTransformToParent())
 
         left[0].SetAndObserveTransformNodeID(inverted_transform.GetID())
         right[0].SetAndObserveTransformNodeID(inverted_transform.GetID())
         self.t2_node.SetAndObserveTransformNodeID(inverted_transform.GetID())
-
 
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
@@ -601,8 +601,10 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
             out_folder=out_folder)
         ((Path(out_folder) / "result.0.nii.gz")
          .rename((out_name)))
+
     def wm_segmentation(self, t1: str, out_folder: str) -> None:
         slicer_preprocessing.wm_segmentation(t1, out_folder)
+
     def intensity_normalisation(self, out_folder: str) -> None:
         slicer_preprocessing.intensity_normalisation(out_folder)
 
@@ -662,12 +664,8 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
             self.center_orig.AddControlPointWorld(cent_mirr[0], cent_mirr[1], cent_mirr[2])
             self.center_orig.AddControlPointWorld(cent_orig[0], cent_orig[1], cent_orig[2])
 
-
-
-
             mesh1 = display_mesh(mesh_orig, "STN right")
             mesh2 = display_mesh(mesh_mirr, "STN left")
-
 
             return (mesh1, pts_left), (mesh2, pts_right)
 
@@ -755,7 +753,7 @@ def display_mesh(mesh, node_name):
 
     displayNode = modelNode.GetDisplayNode()
     if displayNode is None:
-        displayNode : vtkMRMLModelDisplayNode= slicer.mrmlScene.CreateNodeByClass("vtkMRMLModelDisplayNode")
+        displayNode: vtkMRMLModelDisplayNode = slicer.mrmlScene.CreateNodeByClass("vtkMRMLModelDisplayNode")
         slicer.mrmlScene.AddNode(displayNode)
         modelNode.SetAndObserveDisplayNodeID(displayNode.GetID())
     displayNode.SetScalarVisibility(1)
