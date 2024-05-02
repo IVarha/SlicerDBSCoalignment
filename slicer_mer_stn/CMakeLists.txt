@@ -26,6 +26,9 @@ add_subdirectory(LabelConverter)
 add_subdirectory(LabelConversion)
 add_subdirectory(LabelConversion)
 add_subdirectory(TextToMarkups)
+add_subdirectory(ShiftCLI)
+add_subdirectory(ShiftCLI)
+add_subdirectory(AtlasMapping)
 ## NEXT_MODULE
 
 #-----------------------------------------------------------------------------

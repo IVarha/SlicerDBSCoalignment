@@ -1,14 +1,11 @@
 import logging
 import os
-from typing import Annotated, Optional, Union
-
-import numpy as np
+from typing import Annotated, Optional
+import slicer
 import vtk
 
 import slicer
-from MRMLCorePython import vtkMRMLModelNode, vtkMRMLSegmentationNode, vtkMRMLLinearTransformNode, \
-    vtkMRMLLabelMapVolumeNode
-from scipy.interpolate import RegularGridInterpolator
+from MRMLCorePython import vtkMRMLModelNode
 from slicer.i18n import tr as _
 from slicer.i18n import translate
 from slicer.ScriptedLoadableModule import *
@@ -17,36 +14,90 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
     WithinRange,
 )
-
+import numpy as np
 from slicer import vtkMRMLScalarVolumeNode
-from vtkSegmentationCorePython import vtkSegmentation
-from vtkmodules.vtkCommonDataModel import vtkImageData
 
-from DBS_STN.Lib.image_utils import SlicerImage
+import nibabel as nib
+import numpy as np
+
+
+def convert_model_to_segmentation(model_node):
+    # Create a new segmentation node
+    segmentation_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+    segmentation_node.CreateDefaultDisplayNodes()  # Create display nodes
+
+    # Create a segment within the segmentation node
+    segment_id = segmentation_node.GetSegmentation().AddEmptySegment()
+    segment = segmentation_node.GetSegmentation().GetSegment(segment_id)
+
+    # Convert the model to a binary labelmap representation
+    slicer.modules.models.logic().CreateClosedSurfaceRepresentation(model_node, segment)
+
+    return segmentation_node
+
+
+def add_empty_voxels_nifti(nifti_image, num_empty_voxels):
+    # Get the data array from the NIfTI image
+    image_data = nifti_image.get_fdata()
+
+    # Get the dimensions of the original image
+    original_shape = image_data.shape
+
+    # Calculate the new shape with additional empty voxels
+    new_shape = tuple(np.array(original_shape) + 2 * num_empty_voxels)
+
+    # Create a larger array with empty voxels
+    larger_image_data = np.zeros(new_shape)
+
+    # Calculate the slices to copy the original image into the larger array
+    slices = [slice(num_empty_voxels, num_empty_voxels + s) for s in original_shape]
+
+    # Copy the original image into the larger array
+    larger_image_data[slices] = image_data
+
+    # Create a new NIfTI image with the larger data array
+    larger_nifti_image = nib.Nifti1Image(larger_image_data, nifti_image.affine)
+
+    return larger_nifti_image
+
+
+# Example usage
+# Load the original NIfTI image
+nifti_file_path = "original_nifti_image.nii.gz"  # Path to your original NIfTI image
+nifty_image = nib.load(nifti_file_path)
+
+# Specify the number of empty voxels to add in each dimension
+num_empty_voxels = 10
+
+# Add empty voxels to the original NIfTI image
+new_nifty_image = add_empty_voxels_nifti(nifty_image, num_empty_voxels)
+
+# Save the new NIfTI image
+nib.save(new_nifty_image, "new_nifti_image.nii.gz")
 
 
 #
-# LabelConversion
+# AtlasMapping
 #
 
 
-class LabelConversion(ScriptedLoadableModule):
+class AtlasMapping(ScriptedLoadableModule):
     """Uses ScriptedLoadableModule base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
 
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = _("LabelConversion")  # TODO: make this more human readable by adding spaces
+        self.parent.title = _("AtlasMapping")  # TODO: make this more human readable by adding spaces
         # TODO: set categories (folders where the module shows up in the module selector)
-        self.parent.categories = [translate("qSlicerAbstractCoreModule", "DBS")]
+        self.parent.categories = [translate("qSlicerAbstractCoreModule", "Examples")]
         self.parent.dependencies = []  # TODO: add here list of module names that this module requires
         self.parent.contributors = ["John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
         # TODO: update with short description of the module and a link to online module documentation
         # _() function marks text as translatable to other languages
         self.parent.helpText = _("""
 This is an example of scripted loadable module bundled in an extension.
-See more information in <a href="https://github.com/organization/projectname#LabelConversion">module documentation</a>.
+See more information in <a href="https://github.com/organization/projectname#AtlasMapping">module documentation</a>.
 """)
         # TODO: replace with organization, grant and thanks
         self.parent.acknowledgementText = _("""
@@ -75,67 +126,79 @@ def registerSampleData():
     # To ensure that the source code repository remains small (can be downloaded and installed quickly)
     # it is recommended to store data sets that are larger than a few MB in a Github release.
 
-    # LabelConversion1
+    # AtlasMapping1
     SampleData.SampleDataLogic.registerCustomSampleDataSource(
         # Category and sample name displayed in Sample Data module
-        category="LabelConversion",
-        sampleName="LabelConversion1",
+        category="AtlasMapping",
+        sampleName="AtlasMapping1",
         # Thumbnail should have size of approximately 260x280 pixels and stored in Resources/Icons folder.
         # It can be created by Screen Capture module, "Capture all views" option enabled, "Number of images" set to "Single".
-        thumbnailFileName=os.path.join(iconsPath, "LabelConversion1.png"),
+        thumbnailFileName=os.path.join(iconsPath, "AtlasMapping1.png"),
         # Download URL and target file name
         uris="https://github.com/Slicer/SlicerTestingData/releases/download/SHA256/998cb522173839c78657f4bc0ea907cea09fd04e44601f17c82ea27927937b95",
-        fileNames="LabelConversion1.nrrd",
+        fileNames="AtlasMapping1.nrrd",
         # Checksum to ensure file integrity. Can be computed by this command:
         #  import hashlib; print(hashlib.sha256(open(filename, "rb").read()).hexdigest())
         checksums="SHA256:998cb522173839c78657f4bc0ea907cea09fd04e44601f17c82ea27927937b95",
         # This node name will be used when the data set is loaded
-        nodeNames="LabelConversion1",
+        nodeNames="AtlasMapping1",
     )
 
-    # LabelConversion2
+    # AtlasMapping2
     SampleData.SampleDataLogic.registerCustomSampleDataSource(
         # Category and sample name displayed in Sample Data module
-        category="LabelConversion",
-        sampleName="LabelConversion2",
-        thumbnailFileName=os.path.join(iconsPath, "LabelConversion2.png"),
+        category="AtlasMapping",
+        sampleName="AtlasMapping2",
+        thumbnailFileName=os.path.join(iconsPath, "AtlasMapping2.png"),
         # Download URL and target file name
         uris="https://github.com/Slicer/SlicerTestingData/releases/download/SHA256/1a64f3f422eb3d1c9b093d1a18da354b13bcf307907c66317e2463ee530b7a97",
-        fileNames="LabelConversion2.nrrd",
+        fileNames="AtlasMapping2.nrrd",
         checksums="SHA256:1a64f3f422eb3d1c9b093d1a18da354b13bcf307907c66317e2463ee530b7a97",
         # This node name will be used when the data set is loaded
-        nodeNames="LabelConversion2",
+        nodeNames="AtlasMapping2",
     )
 
 
+def write_points_to_file(poly_data, filename):
+    points = poly_data.GetPoints()
+
+    with open(filename, 'w') as f:
+        f.write("point\n")
+        f.write(str(points.GetNumberOfPoints()) + "\n")
+        for i in range(points.GetNumberOfPoints()):
+            point = points.GetPoint(i)
+            f.write(f"{point[0]} {point[1]} {point[2]}\n")
+
 #
-# LabelConversionParameterNode
+# AtlasMappingParameterNode
 #
 
 
 @parameterNodeWrapper
-class LabelConversionParameterNode:
+class AtlasMappingParameterNode:
     """
     The parameters needed by module.
 
-    inputVolume - The volume to threshold.
+    inputMesh - The volume to threshold.
     imageThreshold - The value at which to threshold the input volume.
     invertThreshold - If true, will invert the threshold.
     thresholdedVolume - The output volume that will contain the thresholded volume.
     invertedVolume - The output volume that will contain the inverted thresholded volume.
     """
 
-    inputVolume: Union[vtkMRMLModelNode,vtkMRMLLabelMapVolumeNode]
-    toMNI: vtkMRMLLinearTransformNode
-
+    inputMesh: vtkMRMLModelNode
+    imageThreshold: Annotated[float, WithinRange(-100, 500)] = 100
+    invertThreshold: bool = False
+    thresholdedVolume: vtkMRMLScalarVolumeNode
+    invertedVolume: vtkMRMLScalarVolumeNode
 
 
 #
-# LabelConversionWidget
+# AtlasMappingWidget
 #
 
 
-class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class AtlasMappingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
@@ -154,7 +217,7 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Load widget from .ui file (created by Qt Designer).
         # Additional widgets can be instantiated manually and added to self.layout.
-        uiWidget = slicer.util.loadUI(self.resourcePath("UI/LabelConversion.ui"))
+        uiWidget = slicer.util.loadUI(self.resourcePath("UI/AtlasMapping.ui"))
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
@@ -165,7 +228,7 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
-        self.logic = LabelConversionLogic()
+        self.logic = AtlasMappingLogic()
 
         # Connections
 
@@ -175,15 +238,9 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Buttons
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
-        self.ui.applyConvert.clicked.connect(self.onApplyConvert)
+
         # Make sure parameter node is initialized (needed for module reload)
-        #self.initializeParameterNode()
-
-
-    def onApplyConvert(self):
-        convert_label(self.ui.textinputSelector.currentNode(),self.ui.toMNIInputSelector.currentNode(),
-                                 self.ui.outputSelector.currentNode())
-        pass
+        self.initializeParameterNode()
 
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
@@ -220,13 +277,13 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.setParameterNode(self.logic.getParameterNode())
 
-        # # Select default input nodes if nothing is selected yet to save a few clicks for the user
-        # if not self._parameterNode.inputVolume:
-        #     firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
-        #     if firstVolumeNode:
-        #         self._parameterNode.inputVolume = firstVolumeNode
+        # Select default input nodes if nothing is selected yet to save a few clicks for the user
+        if not self._parameterNode.inputMesh:
+            firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+            if firstVolumeNode:
+                self._parameterNode.inputMesh = firstVolumeNode
 
-    def setParameterNode(self, inputParameterNode: Optional[LabelConversionParameterNode]) -> None:
+    def setParameterNode(self, inputParameterNode: Optional[AtlasMappingParameterNode]) -> None:
         """
         Set and observe parameter node.
         Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
@@ -244,7 +301,7 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._checkCanApply()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.thresholdedVolume:
+        if self._parameterNode and self._parameterNode.inputMesh and self._parameterNode.thresholdedVolume:
             self.ui.applyButton.toolTip = _("Compute output volume")
             self.ui.applyButton.enabled = True
         else:
@@ -266,291 +323,11 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
 #
-# LabelConversionLogic
+# AtlasMappingLogic
 #
 
-def getCenterOfMass( volumeNode: vtkMRMLLabelMapVolumeNode):
-    """
-    Get the center of mass of a binary image
-    """
-    a = [0,0,0,0,0,0]
-    volumeNode.GetRASBounds(a)
-    print(a)
-    x = np.array([a[0],a[2],a[4]])
-    y = np.array([a[1],a[3],a[5]])
 
-    return (x+y)/2
-
-
-
-
-    # # Define some necessary variables for later.
-    # centerOfMass = [0,0,0]
-    # numberOfStructureVoxels = 0
-    # sumX = sumY = sumZ = 0
-    #
-    # # Gets the image data for the current node.
-    # volume = volumeNode
-    #
-    # # Uses the extent of the image to get the range for the loops,
-    # # Then if the value of the given voxel is > zero we add the
-    # # value of the voxel coordinate to the running sums, and the
-    # # count of voxels is incremented.
-    # # We go by 2's to increase the speed - it won't have much (if
-    # # any) effect on the result.
-    # for z in range(volume.GetExtent()[4], volume.GetExtent()[5] + 1, 2):
-    #   for y in range(volume.GetExtent()[2], volume.GetExtent()[3] + 1, 2):
-    #     for x in range(volume.GetExtent()[0], volume.GetExtent()[1] + 1, 2):
-    #       voxelValue = volume.GetScalarComponentAsDouble(x, y, z, 0)
-    #       if voxelValue > 0:
-    #         numberOfStructureVoxels = numberOfStructureVoxels + 1
-    #         sumX = sumX + x
-    #         sumY = sumY + y
-    #         sumZ = sumZ + z
-    #
-    # # When the loop terminates, if we had any voxels, we calculate
-    # # the Center of Mass by dividing the sums by the number of voxels
-    # # in total.
-    # if numberOfStructureVoxels > 0:
-    #   centerOfMass[0] = sumX / numberOfStructureVoxels
-    #   centerOfMass[1] = sumY / numberOfStructureVoxels
-    #   centerOfMass[2] = sumZ / numberOfStructureVoxels
-    #
-    # print(volume.ComputeCellId([centerOfMass[0],centerOfMass[1],centerOfMass[2]]))
-    # # Return the point that contains the center of mass location.
-    # return centerOfMass
-# def center_of_mass(image_data):
-#     # Convert VTK image data to NumPy array
-#     image_array = vtk.util.numpy_support.vtk_to_numpy(image_data.GetPointData().GetScalars())
-#     image_array = image_array.reshape(image_data.GetDimensions())
-#
-#     # Get dimensions of the image
-#     dims = image_data.GetDimensions()
-#
-#     # Initialize variables to calculate center of mass
-#     total_mass = 0
-#     center = np.array([0.0, 0.0, 0.0])
-#
-#     # Iterate through all voxels to calculate center of mass
-#     for z in range(dims[2]):
-#         for y in range(dims[1]):
-#             for x in range(dims[0]):
-#                 # Check if the voxel belongs to the label (assuming label value is 1)
-#                 if image_array[x,y,z] == 1:
-#                     # Update center of mass
-#                     center += np.array([x, y, z])
-#                     total_mass += 1
-#
-#     # Divide by total mass to get the center of mass
-#     if total_mass > 0:
-#         center /= total_mass
-#     else:
-#         raise ValueError("No voxels corresponding to the label found in the image.")
-#     # convert to from index to coordinate
-#     print(center)
-#
-#     return center
-
-
-def get_np_from_node(node :vtkMRMLLinearTransformNode):
-    mt1 = vtk.vtkMatrix4x4()
-    node.GetMatrixTransformToParent(mt1)
-    return np.array([[mt1.GetElement(i,j) for j in range(4)] for i in range(4)])
-
-
-def interpolate_3d_array(data, points):
-    """
-    Interpolates a 3D NumPy array at specified points using linear interpolation.
-
-    Parameters:
-        data (ndarray): The 3D NumPy array to be interpolated.
-        points (ndarray): An array of shape (N, 3) containing the coordinates of N points
-                          where interpolation is to be performed.
-
-    Returns:
-        ndarray: An array containing the interpolated values at the specified points.
-    """
-    # Create grid coordinates
-    x = np.arange(data.shape[0])
-    y = np.arange(data.shape[1])
-    z = np.arange(data.shape[2])
-
-    # Create the interpolator
-    interpolator = RegularGridInterpolator((x, y, z), data,bounds_error=False, fill_value=0)
-
-
-    # Perform interpolation
-    interpolated_values = interpolator(points)
-
-    return interpolated_values
-# increase the size 2x in each dimension ex 256x256x256 to 512x512x512 for vtkimagedata
-
-
-def vtk_image_to_numpy(image_data):
-    # Convert VTK image data to NumPy array
-    temp = vtk.util.numpy_support.vtk_to_numpy(image_data.GetPointData().GetScalars())
-    dims = image_data.GetDimensions()
-    numpy_data = temp.reshape(dims[::-1])  # Reversing the dimensions to match NumPy indexing order
-
-    result =  numpy_data.transpose(2, 1, 0)  # Reordering the dimensions to match Slicer's RAS coordinate system
-
-    # increase the size 2x in each dimension ex 256x256x256 to 512x512x512
-    result = np.repeat(result, 2, axis=0)
-    result = np.repeat(result, 2, axis=1)
-    result = np.repeat(result, 2, axis=2)
-
-    return result
-
-
-def compute_image_pts(vtkImage: vtkMRMLLabelMapVolumeNode, points: np.ndarray):
-    """
-    Compute the image at points
-    """
-    # image 2 numpy
-    ras_to_ijk = vtk.vtkMatrix4x4()
-    vtkImage.GetRASToIJKMatrix(ras_to_ijk)
-    numpy_array = vtk_image_to_numpy(vtkImage.GetImageData())
-    # convert points to ijk
-    #convert rastoijk to new ijk
-    mat2x = vtk.vtkMatrix4x4()
-    mat2x.SetElement(0,0,2)
-    mat2x.SetElement(1,1,2)
-    mat2x.SetElement(2,2,2)
-    ras_to_ijk.Multiply4x4(mat2x,ras_to_ijk,ras_to_ijk)
-    #print(ras_to_ijk)
-    ijk_points = np.array([np.array(ras_to_ijk.MultiplyPoint([point[0],point[1],point[2],1]))[:3] for point in points])
-    #print(ijk_points)
-    # interpolate
-    return interpolate_3d_array(numpy_array,ijk_points)
-
-
-def _compute_final_point(sphere_pt: np.ndarray, center:np.ndarray,
-                         label_image: vtkMRMLLabelMapVolumeNode, threshold):
-
-    """
-    compute final point in native space
-        input:
-        sphere_pt: point in native space
-        center: center of the label in native space
-    """
-
-    # get direction vector from pt to center of sphere
-    vect = center - sphere_pt
-    # normalize vector
-    d = np.linalg.norm(vect)
-    vect = vect / d
-
-    num_pts_to_check = 150
-    # generate points along the vector
-    points = np.array([sphere_pt + i * (d/num_pts_to_check) * vect for i in range(num_pts_to_check)])
-
-    # iterate through points and check if the value of the image is above threshold
-
-    values = compute_image_pts(label_image,points)
-    #print("values ",values)
-    #print(points)
-
-    # get the first point that is above threshold
-    for i in range(num_pts_to_check):
-        if values[i] > threshold:
-            return points[i]
-    return points[-1]
-
-
-def _shrink_sphere_to_label(image_data : vtkMRMLLabelMapVolumeNode,
-                            sphere: vtk.vtkPolyData,
-                            to_mni: np.ndarray, center: np.array):
-    """
-    shrink sphere to label
-    image_data: vtkImageData in native space
-    sphere: vtk.vtkPolyData sphere in mni space
-    to_mni: transformation matrix from native to mni space
-    center: center of the label in native space
-    """
-
-    #get ras to ijk
-
-    from_mni = np.linalg.inv(to_mni)
-    slic_im = SlicerImage(image_data.GetImageData())
-    # iterate through all points of the sphere
-    all_points = sphere.GetPoints()
-    for i in range(sphere.GetNumberOfPoints()):
-        point = np.array(list(all_points.GetPoint(i)) + [1])
-        # transform point to native space
-        point = np.dot(from_mni,point)[:3]
-        # get the value of the image at the point
-
-        final_point = _compute_final_point(point,center,image_data,0.01)
-        all_points.SetPoint(i,final_point[0],final_point[1],final_point[2])
-    sphere.SetPoints(all_points)
-    return sphere
-
-
-def _generate_vtk_sphere(center, radius=10, number_of_divisions=2):
-    sphere = vtk.vtkSphereSource()
-    sphere.SetCenter(center[0],center[1],center[2])
-
-    sphere.SetRadius(radius)
-    sphere.Update()
-    or_mesh =  sphere.GetOutput()
-    # process triugh subdivision filter
-    subdivide = vtk.vtkLinearSubdivisionFilter()
-    subdivide.SetInputData(or_mesh)
-    subdivide.SetNumberOfSubdivisions(number_of_divisions)
-    subdivide.Update()
-    return subdivide.GetOutput()
-
-
-def _compute_mesh_from_label_im(label_image: vtkMRMLLabelMapVolumeNode, to_mni: vtkMRMLLinearTransformNode):
-
-    # compute center of a label
-    center = getCenterOfMass(label_image)
-    print(center)
-    to_mni_mat = get_np_from_node(to_mni)
-
-    # transform center to MNI space
-
-    center = np.array([center[0],center[1],center[2],1])
-    center_mni = np.dot(to_mni_mat,center)[:3]
-    # generate sphere in mni
-    sphere = _generate_vtk_sphere(center_mni)
-
-    # shrink sphere to label
-
-    sphere = _shrink_sphere_to_label(label_image,sphere,to_mni_mat,center[:3])
-
-    return sphere
-
-
-def convert_label(segmentation_node : Union[vtkMRMLLabelMapVolumeNode,vtkMRMLModelNode,vtkMRMLSegmentationNode],
-                  toMNI: vtkMRMLLinearTransformNode, out_node: vtkMRMLModelNode):
-    """
-    read label from segmentation node  and shrink sphere  to label in MNI space and write to out_node
-    """
-
-    # read label from segmentation_node
-
-    if isinstance(segmentation_node,vtkMRMLLabelMapVolumeNode):
-
-
-        label_image : vtkImageData = segmentation_node.GetImageData()
-
-
-        #a = SlicerImage(label_image)
-
-        transform_ras_to_ijk = vtk.vtkMatrix4x4()
-        segmentation_node.GetIJKToRASMatrix(transform_ras_to_ijk)
-        transform_ras_to_ijk.Invert()
-
-        resulting_mesh = _compute_mesh_from_label_im(segmentation_node,toMNI)
-        # transform label to MNI space
-    else:
-        return
-    out_node.SetAndObservePolyData(resulting_mesh)
-    #label = segmentation_node.GetSegmentation().GetBinaryLabelmapRepresentation("label")
-
-
-class LabelConversionLogic(ScriptedLoadableModuleLogic):
+class AtlasMappingLogic(ScriptedLoadableModuleLogic):
     """This class should implement all the actual
     computation done by your module.  The interface
     should be such that other python code can import
@@ -565,10 +342,10 @@ class LabelConversionLogic(ScriptedLoadableModuleLogic):
         ScriptedLoadableModuleLogic.__init__(self)
 
     def getParameterNode(self):
-        return LabelConversionParameterNode(super().getParameterNode())
+        return AtlasMappingParameterNode(super().getParameterNode())
 
     def process(self,
-                inputVolume: vtkMRMLScalarVolumeNode,
+                inputMesh: vtkMRMLScalarVolumeNode,
                 outputVolume: vtkMRMLScalarVolumeNode,
                 imageThreshold: float,
                 invert: bool = False,
@@ -576,14 +353,14 @@ class LabelConversionLogic(ScriptedLoadableModuleLogic):
         """
         Run the processing algorithm.
         Can be used without GUI widget.
-        :param inputVolume: volume to be thresholded
+        :param inputMesh: volume to be thresholded
         :param outputVolume: thresholding result
         :param imageThreshold: values above/below this threshold will be set to 0
         :param invert: if True then values above the threshold will be set to 0, otherwise values below are set to 0
         :param showResult: show output volume in slice viewers
         """
 
-        if not inputVolume or not outputVolume:
+        if not inputMesh or not outputVolume:
             raise ValueError("Input or output volume is invalid")
 
         import time
@@ -593,7 +370,7 @@ class LabelConversionLogic(ScriptedLoadableModuleLogic):
 
         # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
         cliParams = {
-            "InputVolume": inputVolume.GetID(),
+            "inputMesh": inputMesh.GetID(),
             "OutputVolume": outputVolume.GetID(),
             "ThresholdValue": imageThreshold,
             "ThresholdType": "Above" if invert else "Below",
@@ -607,11 +384,11 @@ class LabelConversionLogic(ScriptedLoadableModuleLogic):
 
 
 #
-# LabelConversionTest
+# AtlasMappingTest
 #
 
 
-class LabelConversionTest(ScriptedLoadableModuleTest):
+class AtlasMappingTest(ScriptedLoadableModuleTest):
     """
     This is the test case for your scripted module.
     Uses ScriptedLoadableModuleTest base class, available at:
@@ -625,9 +402,9 @@ class LabelConversionTest(ScriptedLoadableModuleTest):
     def runTest(self):
         """Run as few or as many tests as needed here."""
         self.setUp()
-        self.test_LabelConversion1()
+        self.test_AtlasMapping1()
 
-    def test_LabelConversion1(self):
+    def test_AtlasMapping1(self):
         """Ideally you should have several levels of tests.  At the lowest level
         tests should exercise the functionality of the logic with different inputs
         (both valid and invalid).  At higher levels your tests should emulate the
@@ -646,10 +423,10 @@ class LabelConversionTest(ScriptedLoadableModuleTest):
         import SampleData
 
         registerSampleData()
-        inputVolume = SampleData.downloadSample("LabelConversion1")
+        inputMesh = SampleData.downloadSample("AtlasMapping1")
         self.delayDisplay("Loaded test data set")
 
-        inputScalarRange = inputVolume.GetImageData().GetScalarRange()
+        inputScalarRange = inputMesh.GetImageData().GetScalarRange()
         self.assertEqual(inputScalarRange[0], 0)
         self.assertEqual(inputScalarRange[1], 695)
 
@@ -658,16 +435,16 @@ class LabelConversionTest(ScriptedLoadableModuleTest):
 
         # Test the module logic
 
-        logic = LabelConversionLogic()
+        logic = AtlasMappingLogic()
 
         # Test algorithm with non-inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, True)
+        logic.process(inputMesh, outputVolume, threshold, True)
         outputScalarRange = outputVolume.GetImageData().GetScalarRange()
         self.assertEqual(outputScalarRange[0], inputScalarRange[0])
         self.assertEqual(outputScalarRange[1], threshold)
 
         # Test algorithm with inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, False)
+        logic.process(inputMesh, outputVolume, threshold, False)
         outputScalarRange = outputVolume.GetImageData().GetScalarRange()
         self.assertEqual(outputScalarRange[0], inputScalarRange[0])
         self.assertEqual(outputScalarRange[1], inputScalarRange[1])

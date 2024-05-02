@@ -70,6 +70,18 @@ from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeR
     clasify_mers, extract_points_from_mesh
 from Lib.utils_file import get_images_in_folder
 from Lib.visualisiation import LeadORLogic
+import dataclasses
+
+
+
+@dataclasses.dataclass
+class ShiftResult:
+    number_of_records: int
+    cor_recs_a_shift: int
+    cor_rect_b_shift: int
+    shift: np.ndarray
+    scaling: np.ndarray
+
 
 
 def nrms_normalisation(data: MER_data):
@@ -370,7 +382,8 @@ def optimise_mer_signal(mer_data: torch.Tensor,
     print("------------------------------")
     print("Origin estimated value of shift:", x)
 
-
+    start_electrodes_number = optimisation_criterion(mer_data, classes, shift=x[:3], scalling=y, mesh=mesh,
+                                                     return_weight=True)
 
 
     #
@@ -403,7 +416,7 @@ def optimise_mer_signal(mer_data: torch.Tensor,
     print("------------------------------")
     final_electrodes_number = optimisation_criterion(mer_data, classes, shift=x[:3], scalling=x[3:], mesh=mesh,return_weight=True)
 
-    return x[:3], torch.tensor([1.0, 1.0, 1.0], requires_grad=True).detach().numpy(), final_electrodes_number
+    return  ShiftResult(mer_data.shape[0],final_electrodes_number,start_electrodes_number,shift=x[:3],scaling=np.array([1,1,1]))
 
 
 #
@@ -782,15 +795,17 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         result_transforms = {}
         mark = False
         for param in params:
-            res_transform, text_node, num_elecs= self.logic.predict_shift(node, self.side, self.to_mni, self.mesh_copy, self.pcas,
+            res_transform, text_node,shift_result= self.logic.predict_shift(node, self.side, self.to_mni, self.mesh_copy, self.pcas,
                                                                 lambda1=param[0], distance=param[1], learning_rate=0.01)
-            if num_elecs < 10:
+            print("ratio of correctly placed electrodes after shift", shift_result.cor_recs_a_shift/shift_result.number_of_records)
+            print("ratio of correctly placed electrodes before shift", shift_result.cor_rect_b_shift/shift_result.number_of_records)
+            if shift_result.cor_recs_a_shift < 10:
                 mark = True
                 break
-            if num_elecs in params:
+            if shift_result.cor_recs_a_shift in params:
                 pass
             else:
-                result_transforms[num_elecs] = [res_transform, text_node]
+                result_transforms[shift_result.cor_recs_a_shift] = [res_transform, text_node]
         if not mark:
             num_elecs = min(result_transforms.keys())
             res_transform, text_node = result_transforms[num_elecs]
@@ -1371,49 +1386,6 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime - startTime:.2f} seconds')
 
-    def process_mer_data(self, left_markups,
-                         right_markups,
-                         to_mni,
-                         mer_left_path,
-                         mer_right_path):
-
-        points_right = get_control_points(right_markups)
-        points_left = get_control_points(left_markups)
-
-        print(points_right)  # Print the positions of the control points for the right markups node
-        print(points_left)  # Print the positions of the control points for the left markups node
-
-        matrix = get_transform_matrix(transform_node=to_mni)
-        numpy_array = convert_to_numpy_array(matrix)
-
-        et_right = EntryTarget(Point.from_array(points_right[0]), Point.from_array(points_right[1]))
-        et_left = EntryTarget(Point.from_array(points_left[0]), Point.from_array(points_left[1]))
-
-        ea_left = apply_transformation(et_left, numpy_array)
-        ea_right = apply_transformation(et_right, numpy_array)
-
-        print(ea_right)  # Print the entry and target points for the right MER
-
-        mer_left = read_mer_data(mer_left_path, "*run-02*")
-        mer_right = read_mer_data(mer_right_path, "*run-01*")
-
-        mer_left = process_mer_data(mer_left)
-        mer_right = process_mer_data(mer_right)
-
-        right_e_rec = extract_electrode_records(ea_right, mer_right, numpy_array)
-        left_e_rec = extract_electrode_records(ea_left, mer_left, numpy_array)
-
-        logic = LeadORLogic()
-        i = 0
-        for el_name, records in right_e_rec.items():
-            print(records)
-            logic.setUpTrajectory(i, getattr(ea_right, el_name), records, True, "right_" + el_name, 1, 1, 1)
-
-        for el_name, records in left_e_rec.items():
-            print(records)
-            logic.setUpTrajectory(i, getattr(ea_left, el_name), records, True, "left_" + el_name, 1, 1, 1)
-
-        return left_e_rec, right_e_rec
 
     def get_pcas_from_mesh(self, node: vtkMRMLModelNode, mirror=False):
         pts = extract_points_from_mesh(mesh=node.GetMesh())
@@ -1451,6 +1423,11 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
                     el_i * num_records + pos_of_recording - 1] == 1 and classes[
                     el_i * num_records + pos_of_recording + 1] == 1:
                     classes[el_i * num_records + pos_of_recording][0] = 1
+                # if class is 1 and previous and next is 0 then set to 0
+                elif classes[el_i * num_records + pos_of_recording] == 1 and classes[
+                    el_i * num_records + pos_of_recording - 1] == 0 and classes[
+                    el_i * num_records + pos_of_recording + 1] == 0:
+                    classes[el_i * num_records + pos_of_recording][0] = 0
         return classes
 
     def classify_mers(self, mer_data: torch.Tensor):
@@ -1509,17 +1486,18 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         # markup_node = convert_tensor_to_markup_node(unscalled_tensor, side)
         classes = self.classify_mers_clean(unscalled_tensor, num_of_elec)
-        (shift, scalling,final_el_nums), classes = self._predict_shift(unscalled_tensor, torch.Tensor([0.0,0.0,0.0]),#shift,
+        shift_result, classes = self._predict_shift(unscalled_tensor, torch.Tensor([0.0,0.0,0.0]),#shift,
                                                              mesh, classes, lambda1, distance,
                                                              learning_rate)
+
 
         text_node_res = compute_text(classes, df_text['RecordingSiteDTT'].values, mapping_columns)
 
         # logic.remove_previous_shift()
-        converted_transform = self.convert_to_slicer_transformation(shift, scalling, to_mni,
+        converted_transform = self.convert_to_slicer_transformation(shift_result.shift, shift_result.scaling, to_mni,
                                                                     side)  # convert to slicer transformation
 
-        return converted_transform, text_node_res, final_el_nums
+        return converted_transform, text_node_res, shift_result
 
     def create_mesh_copy(self, node: vtkMRMLModelNode):
         """
@@ -1651,11 +1629,11 @@ class DBSShiftPredictionTest(ScriptedLoadableModuleTest):
         left_markups.AddControlPointWorld(4.95, 42.64, -1.34)
         left_markups.SetName("left")
         # load MER files
-        self.left_e_rec, self.right_e_rec = self.logic.process_mer_data(left_markups,
-                                                                        right_markups,
-                                                                        slicer.util.getNode('to_mni'),
-                                                                        r"/home/varga/mounted_tuplak/mer_data_processing/mer/sub-P060/ses-perisurg/ieeg/sub-P060_ses-perisurg_run-01_channels.tsv",
-                                                                        r"/home/varga/mounted_tuplak/mer_data_processing/mer/sub-P060/ses-perisurg/ieeg/sub-P060_ses-perisurg_run-01_channels.tsv")
+        # self.left_e_rec, self.right_e_rec = self.logic.process_mer_data(left_markups,
+        #                                                                 right_markups,
+        #                                                                 slicer.util.getNode('to_mni'),
+        #                                                                 r"/home/varga/mounted_tuplak/mer_data_processing/mer/sub-P060/ses-perisurg/ieeg/sub-P060_ses-perisurg_run-01_channels.tsv",
+        #                                                                 r"/home/varga/mounted_tuplak/mer_data_processing/mer/sub-P060/ses-perisurg/ieeg/sub-P060_ses-perisurg_run-01_channels.tsv")
 
     def test_DBSShiftPrediction1(self):
         """ Ideally you should have several levels of tests.  At the lowest level
