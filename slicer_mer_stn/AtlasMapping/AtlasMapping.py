@@ -5,7 +5,7 @@ import slicer
 import vtk
 
 import slicer
-from MRMLCorePython import vtkMRMLModelNode
+from MRMLCorePython import vtkMRMLModelNode, vtkMRMLTransformNode, vtkMRMLLabelMapVolumeNode
 from slicer.i18n import tr as _
 from slicer.i18n import translate
 from slicer.ScriptedLoadableModule import *
@@ -21,19 +21,62 @@ import nibabel as nib
 import numpy as np
 
 
-def convert_model_to_segmentation(model_node):
+def load_segmentation(nifti_path):
+    # Load NIfTI segmentation file
+    segmentation_node = slicer.util.loadSegmentation(nifti_path)
+    return segmentation_node
+
+
+def adjust_segment_colors(segmentation_node, color_map):
+    # Get segmentation display node
+    segmentation_display_node = segmentation_node.GetDisplayNode()
+
+    # Update segment colors
+    for segment_name, color in color_map.items():
+        segment_id = segmentation_node.GetSegmentation().GetSegmentIdBySegmentName(segment_name)
+        segmentation_display_node.SetSegmentColor(segment_id, color)
+
+
+
+def convert_model_to_segmentation(model_node) -> vtkMRMLLabelMapVolumeNode:
     # Create a new segmentation node
     segmentation_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
     segmentation_node.CreateDefaultDisplayNodes()  # Create display nodes
 
     # Create a segment within the segmentation node
-    segment_id = segmentation_node.GetSegmentation().AddEmptySegment()
-    segment = segmentation_node.GetSegmentation().GetSegment(segment_id)
+    #segment_id = segmentation_node.GetSegmentation().AddEmptySegment()
+    #segment = segmentation_node.GetSegmentation().GetSegment(segment_id)
 
-    # Convert the model to a binary labelmap representation
-    slicer.modules.models.logic().CreateClosedSurfaceRepresentation(model_node, segment)
+    # Render the model into a labelmap volume
+    labelmap_volume_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+    print(model_node)
+    print(segmentation_node)
+    slicer.modules.segmentations.logic().ImportModelToSegmentationNode(model_node, segmentation_node)
+    slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(segmentation_node,
+                                                                      labelmap_volume_node)
+    # # Threshold the labelmap volume to obtain a binary labelmap
+    # threshold = slicer.vtkImageThreshold()
+    # threshold.SetInputData(labelmap_volume_node.GetImageData())
+    # threshold.ThresholdByLower(1)  # Set the threshold value to 1
+    # threshold.SetInValue(1)
+    # threshold.SetOutValue(0)
+    # threshold.Update()
+    #
+    # # Update the labelmap volume with the thresholded data
+    # labelmap_volume_node.SetAndObserveImageData(threshold.GetOutput())
 
-    return segmentation_node
+
+    return labelmap_volume_node
+
+def resourcePath( relativePath):
+    """
+        Get the absolute path to the module resource
+    """
+    dirn = os.path.dirname(__file__)
+    print("pt1", dirn)
+    res = os.path.join(dirn, "Resources", relativePath)
+    print("pt2", res)
+    return res
 
 
 def add_empty_voxels_nifti(nifti_image, num_empty_voxels):
@@ -43,38 +86,33 @@ def add_empty_voxels_nifti(nifti_image, num_empty_voxels):
     # Get the dimensions of the original image
     original_shape = image_data.shape
 
+    # Ensure num_empty_voxels is an integer
+    num_empty_voxels = int(num_empty_voxels)
+
     # Calculate the new shape with additional empty voxels
     new_shape = tuple(np.array(original_shape) + 2 * num_empty_voxels)
 
     # Create a larger array with empty voxels
     larger_image_data = np.zeros(new_shape)
 
-    # Calculate the slices to copy the original image into the larger array
-    slices = [slice(num_empty_voxels, num_empty_voxels + s) for s in original_shape]
+    # Calculate the indices to copy the original image into the larger array
+    start_indices = tuple(num_empty_voxels for _ in range(len(original_shape)))
+    end_indices = tuple(num_empty_voxels + s for s in original_shape)
 
     # Copy the original image into the larger array
-    larger_image_data[slices] = image_data
+    larger_image_data[start_indices[0]:end_indices[0], start_indices[1]:end_indices[1],
+    start_indices[2]:end_indices[2]] = image_data
 
-    # Create a new NIfTI image with the larger data array
-    larger_nifti_image = nib.Nifti1Image(larger_image_data, nifti_image.affine)
+    # Update the origin to account for the shift
+    old_origin = nifti_image.affine[:3, 3]
+    new_origin = old_origin - np.array(num_empty_voxels) * nifti_image.header.get_zooms()[:3]
+    new_affine = np.copy(nifti_image.affine)
+    new_affine[:3, 3] = new_origin
+
+    # Create a new NIfTI image with the larger data array and updated origin
+    larger_nifti_image = nib.Nifti1Image(larger_image_data, new_affine)
 
     return larger_nifti_image
-
-
-# Example usage
-# Load the original NIfTI image
-nifti_file_path = "original_nifti_image.nii.gz"  # Path to your original NIfTI image
-nifty_image = nib.load(nifti_file_path)
-
-# Specify the number of empty voxels to add in each dimension
-num_empty_voxels = 10
-
-# Add empty voxels to the original NIfTI image
-new_nifty_image = add_empty_voxels_nifti(nifty_image, num_empty_voxels)
-
-# Save the new NIfTI image
-nib.save(new_nifty_image, "new_nifti_image.nii.gz")
-
 
 #
 # AtlasMapping
@@ -187,10 +225,7 @@ class AtlasMappingParameterNode:
     """
 
     inputMesh: vtkMRMLModelNode
-    imageThreshold: Annotated[float, WithinRange(-100, 500)] = 100
-    invertThreshold: bool = False
-    thresholdedVolume: vtkMRMLScalarVolumeNode
-    invertedVolume: vtkMRMLScalarVolumeNode
+    invertedVolume: vtkMRMLTransformNode
 
 
 #
@@ -279,7 +314,7 @@ class AtlasMappingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Select default input nodes if nothing is selected yet to save a few clicks for the user
         if not self._parameterNode.inputMesh:
-            firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+            firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLModelNode")
             if firstVolumeNode:
                 self._parameterNode.inputMesh = firstVolumeNode
 
@@ -301,7 +336,7 @@ class AtlasMappingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._checkCanApply()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputMesh and self._parameterNode.thresholdedVolume:
+        if self._parameterNode and self._parameterNode.inputMesh:
             self.ui.applyButton.toolTip = _("Compute output volume")
             self.ui.applyButton.enabled = True
         else:
@@ -312,15 +347,49 @@ class AtlasMappingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Run processing when user clicks "Apply" button."""
         with slicer.util.tryWithErrorDisplay(_("Failed to compute results."), waitCursor=True):
             # Compute output
-            self.logic.process(self.ui.inputSelector.currentNode(), self.ui.outputSelector.currentNode(),
-                               self.ui.imageThresholdSliderWidget.value, self.ui.invertOutputCheckBox.checked)
 
-            # Compute inverted output (if needed)
-            if self.ui.invertedOutputSelector.currentNode():
-                # If additional output volume is selected then result with inverted threshold is written there
-                self.logic.process(self.ui.inputSelector.currentNode(), self.ui.invertedOutputSelector.currentNode(),
-                                   self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked, showResult=False)
 
+            segment_colors = {
+                "STN_motor": [255, 105, 240],  # Red
+                "STN_limbic": [255, 24, 9],  # Green
+                "STN_associative": [53, 255, 255]  # Blue
+            }
+            segme_paths = [resourcePath("eparams/STN_motor.nii.gz"),
+                           resourcePath("eparams/STN_limbic.nii.gz"),resourcePath("eparams/STN_associative.nii.gz")]
+
+
+            def_name = "Segment_1"
+            segmentation_nodes = [load_segmentation(nifti_path) for nifti_path in segme_paths]
+            seg_1 = segmentation_nodes[0]
+            seg_1.GetSegmentation().GetSegment(def_name).SetColor(segment_colors["STN_motor"])
+            seg_1.GetSegmentation().GetSegment(def_name).SetName("STN_motor")
+            # add segments to the segmentation node
+            seg_1.GetSegmentation().AddSegment(segmentation_nodes[1].GetSegmentation().GetSegment(def_name))
+            seg_1.GetSegmentation().GetSegment(seg_1.GetSegmentation().GetSegmentIdBySegmentName(def_name)).SetColor(segment_colors["STN_limbic"])
+            seg_1.GetSegmentation().GetSegment(seg_1.GetSegmentation().GetSegmentIdBySegmentName(def_name)).SetName("STN_limbic")
+            seg_1.GetSegmentation().AddSegment(segmentation_nodes[2].GetSegmentation().GetSegment(def_name))
+            seg_1.GetSegmentation().GetSegment(seg_1.GetSegmentation().GetSegmentIdBySegmentName(def_name)).SetColor(
+                segment_colors["STN_associative"])
+            seg_1.GetSegmentation().GetSegment(seg_1.GetSegmentation().GetSegmentIdBySegmentName(def_name)).SetName("STN_associative")
+            seg_1.SetName("STN_Accolla")
+
+            # remove the other segmentations
+            for seg in segmentation_nodes[1:]:
+                slicer.mrmlScene.RemoveNode(seg)
+            meshN = self.ui.inputSelector.currentNode()
+            transf_id = meshN.GetTransformNodeID()
+            if transf_id: #reset the transform node as it wouldnt work.
+                meshN.SetAndObserveTransformNodeID(None)
+            self.logic.process(meshN, self.ui.invertedOutputSelector.currentNode())
+
+            if transf_id:
+                meshN.SetAndObserveTransformNodeID(transf_id)
+                # set and observe transform node to invertedOutputSelector
+                self.ui.invertedOutputSelector.currentNode().SetAndObserveTransformNodeID(meshN.GetTransformNodeID())
+
+            # set and observe transform node to segment
+            seg_1.SetAndObserveTransformNodeID(self.ui.invertedOutputSelector.currentNode().GetID())
+            # adjust_segment_colors(seg_1, segment_colors)
 
 #
 # AtlasMappingLogic
@@ -345,39 +414,71 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
         return AtlasMappingParameterNode(super().getParameterNode())
 
     def process(self,
-                inputMesh: vtkMRMLScalarVolumeNode,
-                outputVolume: vtkMRMLScalarVolumeNode,
-                imageThreshold: float,
-                invert: bool = False,
-                showResult: bool = True) -> None:
+                inputMesh: vtkMRMLModelNode,
+                outputVolume: vtkMRMLTransformNode) -> None:
         """
         Run the processing algorithm.
         Can be used without GUI widget.
         :param inputMesh: volume to be thresholded
         :param outputVolume: thresholding result
-        :param imageThreshold: values above/below this threshold will be set to 0
-        :param invert: if True then values above the threshold will be set to 0, otherwise values below are set to 0
-        :param showResult: show output volume in slice viewers
         """
 
         if not inputMesh or not outputVolume:
             raise ValueError("Input or output volume is invalid")
 
         import time
-
         startTime = time.time()
-        logging.info("Processing started")
+        # generate temp folder
+        import tempfile
+        dir = tempfile.TemporaryDirectory()
+        print("temp dir", dir.name)
+        try:
+            # convert model to segmentation
+            segmentation = convert_model_to_segmentation(inputMesh)
 
-        # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
-        cliParams = {
-            "inputMesh": inputMesh.GetID(),
-            "OutputVolume": outputVolume.GetID(),
-            "ThresholdValue": imageThreshold,
-            "ThresholdType": "Above" if invert else "Below",
-        }
-        cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True, update_display=showResult)
-        # We don't need the CLI module node anymore, remove it to not clutter the scene with it
-        slicer.mrmlScene.RemoveNode(cliNode)
+            # save segmentation to nifti using slicer
+            slicer.util.saveNode(segmentation, os.path.join(dir.name, "mesh_label.nii.gz"))
+            # add extra voxels to nifti
+            nifti_image = nib.load(os.path.join(dir.name, "mesh_label.nii.gz"))
+            nifti_image = add_empty_voxels_nifti(nifti_image, 40)
+            nib.save(nifti_image, os.path.join(dir.name, "mesh_label.nii.gz"))
+
+            # save mesh control points to file
+            write_points_to_file(inputMesh.GetPolyData(), os.path.join(dir.name, "mesh_points.txt"))
+
+            # coregistration run
+            import Elastix
+            elastix = Elastix.ElastixLogic()
+
+            elastixParams = [
+                              "-f", os.path.join(dir.name, "mesh_label.nii.gz"),
+                              "-fp", os.path.join(dir.name, "mesh_points.txt"),
+                              "-m", resourcePath("eparams/STNlabel.nii.gz"),
+                              "-mp", resourcePath("eparams/atlas_pts.txt"),
+                              "-p", resourcePath("eparams/affine.txt"),
+                              "-p", resourcePath("eparams/bspline.txt"),
+                              "-out", dir.name]
+            print( " ".join(elastixParams))
+            ep = elastix.startElastix(elastixParams)
+            elastix.logProcessOutput(ep)
+            # edit transformix parameters
+            transform_params = [
+                "-in", resourcePath(f"eparams{os.path.sep}STNlabel.nii.gz"),
+                "-tp", os.path.join(dir.name, "TransformParameters.1.txt"),
+                "-def","all",
+                "-out", dir.name
+            ]
+            tp = elastix.startTransformix(transform_params)
+            # load transformation
+            elastix.logProcessOutput(tp)
+            outputTransformPath = os.path.join(dir.name, "deformationField.nii.gz")
+            elastix.loadTransformFromFile(outputTransformPath, outputVolume)
+        except Exception as e:
+            raise ValueError(e)
+        finally:
+            pass
+            #dir.cleanup()
+
 
         stopTime = time.time()
         logging.info(f"Processing completed in {stopTime-startTime:.2f} seconds")
