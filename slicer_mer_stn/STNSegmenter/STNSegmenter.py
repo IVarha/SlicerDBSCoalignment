@@ -204,14 +204,15 @@ class STNSegmenterParameterNode:
     """
     The parameters needed by module.
 
-    inputVolume - The volume to threshold.
+    structuralVolume - The volume to threshold.
     imageThreshold - The value at which to threshold the input volume.
     invertThreshold - If true, will invert the threshold.
     thresholdedVolume - The output volume that will contain the thresholded volume.
     invertedVolume - The output volume that will contain the inverted thresholded volume.
     """
 
-    inputVolume: vtkMRMLScalarVolumeNode
+    structuralVolume: vtkMRMLScalarVolumeNode
+    t2Volume: vtkMRMLScalarVolumeNode
     imageThreshold: Annotated[float, WithinRange(-100, 500)] = 100
     invertThreshold: bool = False
     thresholdedVolume: vtkMRMLScalarVolumeNode
@@ -350,7 +351,8 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         print("test onApplyIntensity")
         # slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
         if self.wm_seg_done:
-            self.logic.intensity_normalisation(self.temp_workdir.name)
+            print(check_storage_node(self.t2_node, self.temp_workdir).GetFileName())
+            self.logic.intensity_normalisation(self.temp_workdir.name,t2_file_name= check_storage_node(self.t2_node, self.temp_workdir).GetFileName())
             self.intensity_normalisation_done = True
             t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t2_normalised.nii.gz"))
             self.ui.t2inputSelector.currentNodeChanged(t2_node)
@@ -434,10 +436,10 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.setParameterNode(self.logic.getParameterNode())
 
         # Select default input nodes if nothing is selected yet to save a few clicks for the user
-        if not self._parameterNode.inputVolume:
+        if not self._parameterNode.structuralVolume:
             firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
             if firstVolumeNode:
-                self._parameterNode.inputVolume = firstVolumeNode
+                self._parameterNode.structuralVolume = firstVolumeNode
 
     def setParameterNode(self, inputParameterNode: Optional[STNSegmenterParameterNode]) -> None:
         """
@@ -457,7 +459,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._checkCanApply()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.thresholdedVolume:
+        if self._parameterNode and self._parameterNode.structuralVolume and self._parameterNode.thresholdedVolume:
             self.ui.applyButton.toolTip = _("Compute output volume")
             self.ui.applyButton.enabled = True
         else:
@@ -531,44 +533,70 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         return STNSegmenterParameterNode(super().getParameterNode())
 
     def process(self,
-                inputVolume: vtkMRMLScalarVolumeNode,
-                outputVolume: vtkMRMLScalarVolumeNode,
+                structuralVolume: vtkMRMLScalarVolumeNode,
+                t2Volume: vtkMRMLScalarVolumeNode,
                 imageThreshold: float,
                 invert: bool = False,
                 showResult: bool = True) -> None:
         """
         Run the processing algorithm.
         Can be used without GUI widget.
-        :param inputVolume: volume to be thresholded
+        :param structuralVolume: volume to be thresholded
         :param outputVolume: thresholding result
         :param imageThreshold: values above/below this threshold will be set to 0
         :param invert: if True then values above the threshold will be set to 0, otherwise values below are set to 0
         :param showResult: show output volume in slice viewers
         """
 
-        if not inputVolume or not outputVolume:
-            raise ValueError("Input or output volume is invalid")
+        if not structuralVolume or not t2Volume:
+            raise ValueError("Input or T2 volume is invalid")
 
         import time
 
         startTime = time.time()
         logging.info("Processing started")
-
+        right, left = None,None
         # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
-        cliParams = {
-            "InputVolume": inputVolume.GetID(),
-            "OutputVolume": outputVolume.GetID(),
-            "ThresholdValue": imageThreshold,
-            "ThresholdType": "Above" if invert else "Below",
-        }
-        cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True,
-                                 update_display=showResult)
-        # We don't need the CLI module node anymore, remove it to not clutter the scene with it
-        slicer.mrmlScene.RemoveNode(cliNode)
+        # create temp workdir
+        try:
+            temp_workdir = tempfile.TemporaryDirectory()
+            sn1 = STNSegmenter.check_storage_node(structuralVolume, temp_workdir)
+            sn2 = STNSegmenter.check_storage_node(t2Volume, temp_workdir)
+
+            # register t2 to t1
+            self.coregistration_t2_t1(sn1
+                                       , t2=sn2,
+                                       out_name=str(Path(temp_workdir.name) / "coreg_t2.nii.gz"))
+            t2_node = STNSegmenter.loadNiiImage(str(Path(temp_workdir.name) / "coreg_t2.nii.gz"))
+            # brain extraction
+
+            self.brain_extraction(sn1, temp_workdir.name)
+
+            t1_node = STNSegmenter.loadNiiImage(str(Path(temp_workdir.name) / "t1.nii.gz"))
+            print("Brain extracted")
+            # # wm segmentation
+            self.wm_segmentation(str(Path(temp_workdir.name) / "t1.nii.gz"), temp_workdir.name)
+            print("WM segmented")
+            # # intensity normalisation
+            self.intensity_normalisation(temp_workdir.name)
+            t2_node = STNSegmenter.loadNiiImage(str(Path(temp_workdir.name) / "t2_normalised.nii.gz"))
+            print("Coregistering T2 to T1")
+            transform_node = self.two_step_coregistration(t2_node, temp_workdir.name)
+            transform_node.SetName("to_mni")
+
+            (right, _), (left, _) = self.segmentSTNs(t2_node)
+            print("STNs segmented")
+
+            #
+        finally:
+            self.processing_folder.cleanup()
+            self.processing_folder = None
+
+
 
         stopTime = time.time()
         logging.info(f"Processing completed in {stopTime - startTime:.2f} seconds")
-
+        return right,left
     def brain_extraction(self, t1: vtkMRMLVolumeArchetypeStorageNode, temp_dir_path) -> None:
         image_name = t1.GetFileName()
 
@@ -605,8 +633,8 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
     def wm_segmentation(self, t1: str, out_folder: str) -> None:
         slicer_preprocessing.wm_segmentation(t1, out_folder)
 
-    def intensity_normalisation(self, out_folder: str) -> None:
-        slicer_preprocessing.intensity_normalisation(out_folder)
+    def intensity_normalisation(self, out_folder: str, t2_file_name: str) -> None:
+        slicer_preprocessing.intensity_normalisation(out_folder,t2_file_name)
 
     def two_step_coregistration(self, node_to_transform, workdir: str) -> vtkMRMLTransformNode:
         mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
@@ -804,10 +832,10 @@ class STNSegmenterTest(ScriptedLoadableModuleTest):
         import SampleData
 
         registerSampleData()
-        inputVolume = SampleData.downloadSample("STNSegmenter1")
+        structuralVolume = SampleData.downloadSample("STNSegmenter1")
         self.delayDisplay("Loaded test data set")
 
-        inputScalarRange = inputVolume.GetImageData().GetScalarRange()
+        inputScalarRange = structuralVolume.GetImageData().GetScalarRange()
         self.assertEqual(inputScalarRange[0], 0)
         self.assertEqual(inputScalarRange[1], 695)
 
@@ -819,13 +847,13 @@ class STNSegmenterTest(ScriptedLoadableModuleTest):
         logic = STNSegmenterLogic()
 
         # Test algorithm with non-inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, True)
+        logic.process(structuralVolume, outputVolume, threshold, True)
         outputScalarRange = outputVolume.GetImageData().GetScalarRange()
         self.assertEqual(outputScalarRange[0], inputScalarRange[0])
         self.assertEqual(outputScalarRange[1], threshold)
 
         # Test algorithm with inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, False)
+        logic.process(structuralVolume, outputVolume, threshold, False)
         outputScalarRange = outputVolume.GetImageData().GetScalarRange()
         self.assertEqual(outputScalarRange[0], inputScalarRange[0])
         self.assertEqual(outputScalarRange[1], inputScalarRange[1])

@@ -44,7 +44,7 @@
          <bool>false</bool>
         </property>
         <property name="SlicerParameterName" stdset="0">
-         <string>inputVolume</string>
+         <string>structuralVolume</string>
         </property>
        </widget>
       </item>
@@ -75,7 +75,7 @@
          <bool>false</bool>
         </property>
         <property name="SlicerParameterName" stdset="0">
-         <string>inputVolume</string>
+         <string>t2Volume</string>
         </property>
        </widget>
       </item>
