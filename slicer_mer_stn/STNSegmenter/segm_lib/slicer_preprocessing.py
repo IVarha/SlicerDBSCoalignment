@@ -57,13 +57,13 @@ def binarise_threshold(filename, threshold, save_filename):
     nib.save(new_nifti_img, save_filename)
 
 
-def intensity_normalisation(out_folder):
+def intensity_normalisation(out_folder,t2_file):
     """
     Script for intensity normalisation
     works with out_folder/coreg_t2.nii.gz
     """
     file_name = "t2_normalised.nii.gz"
-    t2_file = str(Path(out_folder) / "coreg_t2.nii.gz")
+    #t2_file = str(Path(out_folder) / "coreg_t2.nii.gz")
     wm_mask = str(Path(out_folder) / "wm_mask.nii.gz")
 
     run_wm_slab_creation = ["fcm-normalize", t2_file, "-tm", wm_mask, "-o", str(Path(out_folder) / file_name), "-mo",

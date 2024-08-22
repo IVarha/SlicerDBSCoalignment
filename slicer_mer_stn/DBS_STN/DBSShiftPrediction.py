@@ -408,14 +408,15 @@ def optimise_mer_signal(opt_input : OptimisationInput,
     mer_data = opt_input.mer_data
     # compute criterion function
 
-    d = 1 - (abs(opt_input.electrode_direction)/ sum(abs(opt_input.electrode_direction)))
+    d = opt_input.electrode_direction
     print("distance multiplier", d)
     optimise_f = lambda x, y, verbose=False: (
              lambda1* optimisation_criterion(mer_data, opt_input.in_out,
-                                             shift=x, scalling=y, mesh=opt_input.mesh, verbose=verbose)
-            + (d[0]*abs(x[0]) + d[1]*abs(x[1]) + d[2]*abs(x[2])) # penalize the shift
+                                             shift=x[:3] + d * x[3], scalling=y, mesh=opt_input.mesh, verbose=verbose)
+            + (np.linalg.norm(x[:3] + d * x[3])) # penalize the shift
             + distance*(np.linalg.norm(y - 1)) # penalize the scalling to be close to 1
-             + (0 if np.linalg.norm(x) < 2 else 1000) # penalize the shift > 2
+            #+ (0 if x[3] < 1.5 else 1000) # penalize the scalling > 1
+            + (0 if np.linalg.norm(x[:3]) < 0.5 else 1000) # penalize the shift > 2
             #+ (torch.linalg.norm(x) if torch.linalg.norm(x) > distance else 1 / torch.linalg.norm(x))
     ).item()
 
@@ -434,36 +435,36 @@ def optimise_mer_signal(opt_input : OptimisationInput,
     min_value = 0.7
     max_value = 1.3
 
-    op_ = lambda x,v=False: optimise_f(x[:3], x[3:], v)
-    x = opt_input.shift.clone().detach().numpy().reshape((3)).tolist() + [1.1, 1.1, 1.1]
+    op_ = lambda x,v=False: optimise_f(x[:4], x[4:], v)
+    x = opt_input.shift.clone().detach().numpy().reshape((4)).tolist() + [1.1, 1.1, 1.1]
     x = np.array(x)
-    print(x)
+    #print(x)
     #print("Origin estimated value of the function:", op_(x,True))
     #print("Origin estimated distance", np.linalg.norm(x[:3]))
     from scipy import optimize as opt
 
-    bounds = [(-2, 2), (-2, 2), (-2, 2),
+    bounds = [(-2, 2), (-2, 2), (-2, 2),(-1.5,1.5),
               (min_value, max_value), (min_value, max_value), (min_value, max_value)]
 
-    res = opt.differential_evolution(op_, bounds, disp=True,x0=x,polish=False,seed=42)
-    res = opt.minimize(op_, res.x,method='Powell',options={'disp': True},
-                      bounds=bounds)
+    res = opt.differential_evolution(op_, bounds, disp=True,x0=x,polish=True,seed=42)
+    # res = opt.minimize(op_, res.x,method='Powell',options={'disp': True},
+    #                   bounds=bounds)
 
     x = res.x
     #print(res)
     #print("\n\n")
     #print("Optimized value of x:", x, " y:", y)
-    print("final estimated distance", np.linalg.norm(x[:3]))
+    print("final estimated distance", np.linalg.norm(x[:3] + d * x[3]))
     #print("Optimized value of the function:", op_(torch.from_numpy(x),True))
     #print("------------------------------")
-    final_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=x[3:],
+    final_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3] + d * x[3], scalling=x[4:],
                                                      mesh=opt_input.mesh,return_weight=True)
 
     # wrong labels to debug
-    wl = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=x[3:],
+    wl = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3] + d * x[3], scalling=x[4:],
                                 mesh=opt_input.mesh,return_wrong_labels=True)
     #print("wrong labels", wl)
-    return  ShiftResult(mer_data.shape[0],final_electrodes_number,start_electrodes_number,shift=x[:3],scaling=x[3:]),wl
+    return  ShiftResult(mer_data.shape[0],final_electrodes_number,start_electrodes_number,shift=x[:3] + d * x[3],scaling=x[4:]),wl
 
 
 #
@@ -834,10 +835,11 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     def onTextModified(self, node):
 
         _remove_previous_node("LeadOR: Classes")
+        _remove_previous_node("LeadOR: Wrong Labels")
         # compute shift transformation
         #try multiple runs if fails
         params = \
-            [ [5,0.7]#,
+            [ [5,3]#,
               # [1,0.5],
               # [1,0.2]
 
@@ -890,7 +892,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             mesh_copy = self.logic.create_mesh_copy(node)
             # apply transformation to vtk
             #print("mesh1 before", mesh_copy)
-            mesh_copy = self.apply_transformation_to_polydata(self.to_mni, mesh_copy)
+            mesh_copy = self.apply_transformation_to_polydata(self.to_mni, mesh_copy) # mesh in mni space
             self.mesh1 = mesh_copy
             #print("mesh1", self.mesh1)
 
@@ -1485,7 +1487,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
     def get_pcas_from_mesh(self, node: Union[vtkMRMLModelNode, vtk.vtkPolyData], mirror=False):
         """
-        Get the principal components from the mesh.
+        Get the principal components from the mesh. Mesh must be in MNI space
         """
 
         if isinstance(node, vtkMRMLModelNode):
@@ -1570,7 +1572,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         text_node (vtkMRMLTextNode): The text node containing the MER data.
         side (bool): Indicates the side (left or right) for the shift prediction.
         to_mni (vtkMRMLLinearTransformNode): The transform node to MNI space.
-        mesh (vtk.vtkPolyData): The mesh data in native space.
+        mesh (vtk.vtkPolyData): The mesh data in MNI space.
         pcas: Principal component analysis data for the mesh.
         lambda1: Regularization parameter for the optimization.
         distance: Distance parameter for the optimization.
@@ -1594,7 +1596,6 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         result_tensor, mapping_columns, num_of_elec = self.df_to_electrode_records_tensor(df_text,
                                                                                           to_mni_transform=to_mni,
                                                                                           require_mirror=side)
-        print(result_tensor)
         # note the result tensor is in mni scale and could be mirrored
         unscalled_tensor = result_tensor.clone()
 
@@ -1610,7 +1611,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         #print("classes ", classes.numpy().reshape((num_of_elec,-1)).transpose())
         shift_result, classes, wrong_labels = self._predict_shift(
             OptimisationInput(mer_data=unscalled_tensor,
-                              in_out=classes, shift=torch.Tensor([0.0,0.0,0.0]),
+                              in_out=classes, shift=torch.Tensor([0.0,0.0,0.0,0.0]),
                               scalling=torch.Tensor([1.0,1.0,1.0]), number_of_electrodes=num_of_elec, mesh=mesh),
             lambda1, distance,learning_rate)
 

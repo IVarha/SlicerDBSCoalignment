@@ -1,38 +1,59 @@
-(AutomaticParameterEstimation "true")
-(AutomaticScalesEstimation "true")
-(AutomaticTransformInitialization "false")
-(BSplineInterpolationOrder 3)
-(CheckNumberOfSamples "true")
-(DefaultPixelValue 0)
-(ErodeMask "true")
-(FinalBSplineInterpolationOrder 3)
-(FixedImageDimension 3)
-(FixedImagePyramid "FixedSmoothingImagePyramid")
 (FixedInternalImagePixelType "float")
-(HowToCombineTransforms "Compose")
-(ImagePyramidSchedule 8 8 4 4 4 2 2 2 1 1 1 1)
-(ImageSampler "Random")
-(Interpolator "BSplineInterpolator")
-(MaximumNumberOfIterations 1500)
-(MaximumNumberOfSamplingAttempts 8)
-(MaximumStepLength 2)
-(Metric "AdvancedMattesMutualInformation")
-(MovingImageDimension 3)
-(MovingImagePyramid "MovingSmoothingImagePyramid")
 (MovingInternalImagePixelType "float")
-(NewSamplesEveryIteration "true")
-(NumberOfHistogramBins 32)
-(NumberOfResolutions 4)
-(NumberOfSamplesForExactGradient 2000)
-(NumberOfSpatialSamples 5000)
-(Optimizer "AdaptiveStochasticGradientDescent")
+
+// **************** Main Components **************************
+
 (Registration "MultiResolutionRegistration")
+(Interpolator "BSplineInterpolator")
 (ResampleInterpolator "FinalBSplineInterpolator")
 (Resampler "DefaultResampler")
-(ResultImageFormat "nii.gz")
-(ResultImagePixelType "float")
+(FixedImagePyramid "FixedSmoothingImagePyramid")
+(MovingImagePyramid "MovingSmoothingImagePyramid")
+
+(Optimizer "AdaptiveStochasticGradientDescent")
 (Transform "EulerTransform")
+(Metric "AdvancedMattesMutualInformation")
+
+// ***************** Transformation **************************
+
+(AutomaticScalesEstimation "true")
+(AutomaticTransformInitialization "true")
+(HowToCombineTransforms "Compose")
+
+//Save composite ITK transform
 (ITKTransformOutputFileNameExtension "tfm")
-(UseDirectionCosines "true")
-(WriteIterationInfo "false")
+
+
+
+// ******************* Similarity measure *********************
+
+(NumberOfHistogramBins 64)
+(ErodeMask "false")
+
+// ******************** Multiresolution **********************
+
+(NumberOfResolutions 3)
+(ImagePyramidSchedule 8 8 2  4 4 1  1 1 1 )
+
+// ******************* Optimizer ****************************
+
+(MaximumNumberOfIterations 500)
+(MaximumStepLength 1.0)
+(RequiredRatioOfValidSamples 0.05)
+
+// **************** Image sampling **********************
+
+(NumberOfSpatialSamples 2000)
+(NewSamplesEveryIteration "true")
+(ImageSampler "Random")
+
+// ************* Interpolation and Resampling ****************
+
+(BSplineInterpolationOrder 1)
+(FinalBSplineInterpolationOrder 3)
+
+(DefaultPixelValue 0)
 (WriteResultImage "true")
+
+(ResultImagePixelType "short")
+(ResultImageFormat "nii.gz")
