@@ -81,6 +81,7 @@ class ShiftResult:
     cor_rect_b_shift: int
     shift: np.ndarray
     scaling: np.ndarray
+    optimise_func : float
 
     def __str__(self):
         return (f"Number of records: {self.number_of_records}, "
@@ -312,6 +313,7 @@ class OptimisationInput:
     mesh: vtk.vtkPolyData # mesh object
     number_of_electrodes: int # number of electrodes
 
+
     def __post_init__(self):
         orig_points = self.mer_data[:, :3]
         # compute electrode direction
@@ -416,7 +418,7 @@ def optimise_mer_signal(opt_input : OptimisationInput,
             + (np.linalg.norm(x[:3] + d * x[3])) # penalize the shift
             + distance*(np.linalg.norm(y - 1)) # penalize the scalling to be close to 1
             #+ (0 if x[3] < 1.5 else 1000) # penalize the scalling > 1
-            + (0 if np.linalg.norm(x[:3]) < 0.5 else 1000) # penalize the shift > 2
+            + (0 if np.linalg.norm(x[:3]) < 1.5 else 1000) # penalize the shift > 2
             #+ (torch.linalg.norm(x) if torch.linalg.norm(x) > distance else 1 / torch.linalg.norm(x))
     ).item()
 
@@ -464,7 +466,8 @@ def optimise_mer_signal(opt_input : OptimisationInput,
     wl = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3] + d * x[3], scalling=x[4:],
                                 mesh=opt_input.mesh,return_wrong_labels=True)
     #print("wrong labels", wl)
-    return  ShiftResult(mer_data.shape[0],final_electrodes_number,start_electrodes_number,shift=x[:3] + d * x[3],scaling=x[4:]),wl
+    return  ShiftResult(mer_data.shape[0],final_electrodes_number,start_electrodes_number,shift=x[:3] + d * x[3],scaling=x[4:],
+                        optimise_func=res.fun),wl
 
 
 #
