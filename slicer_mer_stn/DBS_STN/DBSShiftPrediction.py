@@ -1,7 +1,11 @@
 import logging
-
-import pandas as pd
 import slicer
+
+try:
+    import pandas as pd
+except ImportError:
+    slicer.util.pip_install('pandas')
+    import pandas as pd
 
 import os
 import pickle
@@ -25,7 +29,7 @@ import fsl.transform.flirt as fl
 try:
     import mer_lib.artefact_detection as ad
 except ImportError:
-    slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\MER_lib')
+    #slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\MER_lib')
     import mer_lib.artefact_detection as ad
 
 import mer_lib.feature_extraction as fe
@@ -55,7 +59,7 @@ except ImportError:
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerClassifier
 from mer_lib.data import MER_data
-from sklearn.preprocessing import MinMaxScaler
+
 from slicer import vtkMRMLScalarVolumeNode
 from slicer.ScriptedLoadableModule import *
 from slicer.parameterNodeWrapper import (
@@ -1126,6 +1130,11 @@ def compute_transformation_from_signal(records,
     """
 
     """
+    try:
+        from sklearn.preprocessing import MinMaxScaler
+    except ImportError:
+        slicer.util.pip_install('scikit-learn')
+        from sklearn.preprocessing import MinMaxScaler
     transl_scaller = MinMaxScaler().fit([[-10, -10, -10], [10, 10, 10]])  # config tesy
     m2 = np.reshape(mesh_pts, (-1, 1))
     m2 = m2.reshape(-1).tolist()

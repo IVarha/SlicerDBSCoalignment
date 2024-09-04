@@ -1,5 +1,6 @@
 import logging
 import os
+import shlex
 from typing import Annotated, Optional
 import logging
 import slicer
@@ -15,15 +16,24 @@ from typing import Annotated, Optional, Tuple
 
 from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLTransformNode, vtkMRMLModelNode, \
     vtkMRMLModelDisplayNode
-from sklearn.preprocessing import MinMaxScaler
+try:
+    from segm_lib import slicer_preprocessing
+    from segm_lib.image_utils import SlicerImage
+except ImportError:
+    slicer.util.pip_install(r'nibabel')
+    slicer.util.pip_install('intensity-normalization')
+    if sys.platform == 'win32':
+        slicer.util.pip_install('antspyx')
+        slicer.util.pip_install('antspynet')
 
-from segm_lib import slicer_preprocessing
-from segm_lib.image_utils import SlicerImage
+    from segm_lib import slicer_preprocessing
+    from segm_lib.image_utils import SlicerImage
 
 try:
     from dbs_image_utils.mask import SubcorticalMask
 except ImportError:
-    slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\dbs_pure_lib')
+
+    #slicer.util.pip_install('dbs-image-utils')
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerShiftPredictor, TransformerClassifier
 
@@ -37,21 +47,21 @@ import fsl.transform.flirt as fl
 try:
     import mer_lib.artefact_detection as ad
 except ImportError:
-    slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\MER_lib')
+    #slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\MER_lib') todo add installation
     import mer_lib.artefact_detection as ad
-try:
-    import ants
-    import antspynet
-except ImportError:
-    slicer.util.pip_install('tensorflow==2.14.0')
-    slicer.util.pip_install('tensorflow-estimator==2.11.0')
 
-    slicer.util.pip_install('tensorflow-probability==0.22.1')
-    slicer.util.pip_install('keras==2.10.0')
-    slicer.util.pip_install('antspyx')
+if sys.platform == 'win32':
+    try:
+        import ants
+        import antspynet
+    except ImportError:
+        slicer.util.pip_install('tensorflow==2.14.0')
+        slicer.util.pip_install('tensorflow-estimator==2.11.0')
 
-    import ants
-    import antspynet
+        slicer.util.pip_install('tensorflow-probability==0.22.1')
+        slicer.util.pip_install('keras==2.10.0')
+        slicer.util.pip_install('antspyx')
+
 import mer_lib.feature_extraction as fe
 import mer_lib.processor as proc
 import numpy as np
@@ -110,6 +120,11 @@ def loadNiiImage(file_path):
 
 
 def _compute_min_max_scaler(pt_min, pt_max):
+    try:
+        from sklearn.preprocessing import MinMaxScaler
+    except ImportError:
+        slicer.util.pip_install('scikit-learn')
+        from sklearn.preprocessing import MinMaxScaler
     a = MinMaxScaler()
     a.fit([pt_min, pt_max])
     return a
@@ -506,6 +521,12 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
     def __init__(self) -> None:
         """Called when the logic class is instantiated. Can be used for initializing member variables."""
         ScriptedLoadableModuleLogic.__init__(self)
+        try:
+            import torchio
+        except ImportError:
+            slicer.util.pip_install('torchio')
+            import torchio
+
         self.cent_det_hist = _read_pickle(self.resourcePath('nets/cent_detect_hist.pkl'))
 
         self.det_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/detect_mask.pkl'))
@@ -571,15 +592,26 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
 
     def brain_extraction(self, t1: vtkMRMLVolumeArchetypeStorageNode, temp_dir_path) -> None:
         image_name = t1.GetFileName()
-
-        img = ants.image_read(image_name)
-
-        mask = antspynet.brain_extraction(img, "t1") > 0.8
-
         mask_filename = str(Path(temp_dir_path) / "t1_mask.nii.gz")
-        masked_image = img * mask
-        ants.image_write(mask, mask_filename)
-        ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
+
+        if sys.platform == 'win32':
+
+            img = ants.image_read(image_name)
+
+            mask = antspynet.brain_extraction(img, "t1") > 0.8
+            masked_image = img * mask
+            ants.image_write(mask, mask_filename)
+            ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
+        elif sys.platform == 'darwin':
+            cmd = "python -c 'import antspynet;import ants;from pathlib import Path;"
+            cmd += f"img=ants.image_read(\"{image_name}\");"
+            cmd += f"mask=antspynet.brain_extraction(img, \"t1\") > 0.8;"
+            cmd += f"masked_image=img*mask;"
+            cmd += f"ants.image_write(mask, \"{mask_filename}\");"
+            cmd += f"ants.image_write(masked_image, \"{str(Path(temp_dir_path) / 't1.nii.gz')}\")'"
+            cmd = shlex.split(cmd)
+            subprocess.check_output(cmd)
+
         print("FINISHED EXTRACTOR")
         # cmd = [sys.executable, self.resourcePath("py/bet.py"), str(image_name), mask_filename, str(Path(temp_dir_path) / "t1.nii.gz")]
         # print(cmd)

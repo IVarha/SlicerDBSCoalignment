@@ -1,19 +1,16 @@
-import os
 #
-from pathlib import Path
 import subprocess
-import shlex
+import sys
+from pathlib import Path
 
 import ants
-import antspynet
 import nibabel as nib
 import numpy as np
 from intensity_normalization.cli.fcm import fcm_main
-import sys
 
 
-
-
+def _run_cli_wm_segmentation(t1, out_folder):
+    pass
 def wm_segmentation(t1, out_folder):
     """
     t1: str t1 file
@@ -27,7 +24,16 @@ def wm_segmentation(t1, out_folder):
 
 
     t1_image = ants.image_read(t1)
-    res = antspynet.deep_atropos(t1_image)
+    # run the deep_atropos segmentation algorithm of white matter
+    if sys.platform == 'win32':
+        import antspynet
+        res = antspynet.deep_atropos(t1_image, verbose=True)
+    elif sys.platform == 'darwin':
+        res = None
+
+
+
+
 
     si = res['segmentation_image']
     wm = (si == 3) or (si == 4) or (si == 5)
