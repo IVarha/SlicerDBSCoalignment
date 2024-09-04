@@ -17,7 +17,9 @@ from slicer.parameterNodeWrapper import (
 import numpy as np
 from slicer import vtkMRMLScalarVolumeNode
 
-import nibabel as nib
+import os
+
+
 import numpy as np
 
 
@@ -81,6 +83,12 @@ def resourcePath( relativePath):
 
 def add_empty_voxels_nifti(nifti_image, num_empty_voxels):
     # Get the data array from the NIfTI image
+    try:
+        import nibabel as nib
+    except ImportError:
+        slicer.util.pip_install("nibabel")
+        import nibabel as nib
+
     image_data = nifti_image.get_fdata()
 
     # Get the dimensions of the original image
@@ -425,6 +433,11 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
 
         if not inputMesh or not outputVolume:
             raise ValueError("Input or output volume is invalid")
+        try:
+            import nibabel as nib
+        except ImportError:
+            slicer.util.pip_install("nibabel")
+            import nibabel as nib
 
         import time
         startTime = time.time()
@@ -439,6 +452,7 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
             # save segmentation to nifti using slicer
             slicer.util.saveNode(segmentation, os.path.join(dir.name, "mesh_label.nii.gz"))
             # add extra voxels to nifti
+
             nifti_image = nib.load(os.path.join(dir.name, "mesh_label.nii.gz"))
             nifti_image = add_empty_voxels_nifti(nifti_image, 40)
             nib.save(nifti_image, os.path.join(dir.name, "mesh_label.nii.gz"))

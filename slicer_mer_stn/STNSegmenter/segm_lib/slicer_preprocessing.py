@@ -8,7 +8,8 @@ import numpy as np
 from intensity_normalization.cli.fcm import fcm_main
 import sys
 import ants
-import antspynet
+if sys.platform == 'win32':
+    import antspynet
 
 
 def register_t2_to_t1(script_home, t1, t2, out_name):
@@ -22,6 +23,22 @@ def register_t2_to_t1(script_home, t1, t2, out_name):
 
     subprocess.check_output(flirt_command)
 
+def _run_cli_wm_segmentation(t1, out_folder):
+    import subprocess
+    import shlex
+
+    cmd = f"python -c 'import antspynet;import ants;from pathlib import Path;"
+    cmd += f"res=antspynet.deep_atropos({t1}, verbose=True);si=res[\"segmentation_image\"];"
+    cmd += f"wm=(si==3) or (si==4) or (si==5);"
+    cmd += f"wm_file=str(Path(\"{out_folder}\") / \"wm_mask.nii.gz\");"
+    cmd += f"ants.image_write(wm, wm_file)'"
+
+    print(cmd)
+
+    cmd = shlex.split(cmd)
+    subprocess.check_output(cmd)
+
+    pass
 
 def wm_segmentation(t1, out_folder):
     """
@@ -31,13 +48,20 @@ def wm_segmentation(t1, out_folder):
     print(t1)
 
     t1_image = ants.image_read(t1)
-    res = antspynet.deep_atropos(t1_image)
+    if sys.platform == 'win32':
+        import antspynet
+        res = antspynet.deep_atropos(t1_image, verbose=True)
 
-    si = res['segmentation_image']
-    wm = (si == 3) or (si == 4) or (si == 5)
+        si = res['segmentation_image']
+        wm = (si == 3) or (si == 4) or (si == 5)
 
-    wm_file = str(Path(out_folder) / "wm_mask.nii.gz")
-    ants.image_write(wm, wm_file)
+        wm_file = str(Path(out_folder) / "wm_mask.nii.gz")
+        ants.image_write(wm, wm_file)
+    elif sys.platform == 'darwin':
+        res = _run_cli_wm_segmentation(t1, out_folder)
+
+
+
 
 
 def binarise_threshold(filename, threshold, save_filename):
