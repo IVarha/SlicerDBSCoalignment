@@ -58,8 +58,12 @@ except ImportError:
     slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\dbs_pure_lib')
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerClassifier
-from mer_lib.data import MER_data
+try:
 
+    from mer_lib.data import MER_data
+except ImportError:
+    slicer.util.pip_install(r'pandas-ods-reader')
+    from mer_lib.data import MER_data
 from slicer import vtkMRMLScalarVolumeNode
 from slicer.ScriptedLoadableModule import *
 from slicer.parameterNodeWrapper import (
@@ -1329,14 +1333,14 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         ScriptedLoadableModuleLogic.__init__(self)
 
         self.net_shift = TransformerShiftPredictor(4, 64, 1, 1, 10)
-        cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
+        cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('mps'))
         self.net_shift.load_state_dict(cd_state_dict)
 
         self.mer_transforms = _read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
 
         self.mer_classification_net = TransformerClassifier(4, 64, 1, 1)
         cd_state_dict = torch.load(self.resourcePath('nets/transformer_classifier.pt'),
-                                   map_location=torch.device('cpu'))
+                                   map_location=torch.device('mps'))
         self.mer_classification_net.load_state_dict(cd_state_dict)
 
     def read_leadOR_txt(self, text_node: vtkMRMLTextNode):

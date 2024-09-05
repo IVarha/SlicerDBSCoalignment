@@ -1,21 +1,18 @@
-import logging
-import os
 import shlex
-from typing import Annotated, Optional
 import logging
-import slicer
-
 import os
 import pickle
-import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated, Optional, Tuple
 
+import slicer
 from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLTransformNode, vtkMRMLModelNode, \
     vtkMRMLModelDisplayNode
+
 try:
     from segm_lib import slicer_preprocessing
     from segm_lib.image_utils import SlicerImage
@@ -35,14 +32,13 @@ except ImportError:
 
     #slicer.util.pip_install('dbs-image-utils')
     from dbs_image_utils.mask import SubcorticalMask
-from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerShiftPredictor, TransformerClassifier
+from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
 
 try:
     import fsl.data.image as fim
 except ImportError:
     slicer.util.pip_install('fslpy')
     import fsl.data.image as fim
-import fsl.transform.flirt as fl
 
 try:
     import mer_lib.artefact_detection as ad
@@ -62,11 +58,8 @@ if sys.platform == 'win32':
         slicer.util.pip_install('keras==2.10.0')
         slicer.util.pip_install('antspyx')
 
-import mer_lib.feature_extraction as fe
-import mer_lib.processor as proc
 import numpy as np
 import qt
-import vtk
 
 try:
     import torch
@@ -534,8 +527,8 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         self.det_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/detect_mask.pkl'))
         self.processing_folder = None
         self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
-        net = CenterDetector().to('cpu')
-        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('cpu'))
+        net = CenterDetector().to('mps')
+        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('mps'))
         net.load_state_dict(cd_state_dict)
         self.center_detector = net
 
@@ -546,7 +539,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         # load segmentation model
         self.shape_histogram = _read_pickle(self.resourcePath('nets/shape_hist.pkl'))
         net = CenterAndPCANet(self.shape_pca_res[1])
-        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
+        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('mps'))
         net.load_state_dict(cd_state_dict)
         self.shape_predictor = net
 

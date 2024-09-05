@@ -3,7 +3,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import ants
 import nibabel as nib
 import numpy as np
 from intensity_normalization.cli.fcm import fcm_main
@@ -23,11 +22,18 @@ def wm_segmentation(t1, out_folder):
     # subprocess.check_output(copy_image)
 
 
-    t1_image = ants.image_read(t1)
+
     # run the deep_atropos segmentation algorithm of white matter
     if sys.platform == 'win32':
         import antspynet
+        import ants
+        t1_image = ants.image_read(t1)
         res = antspynet.deep_atropos(t1_image, verbose=True)
+        si = res['segmentation_image']
+        wm = (si == 3) or (si == 4) or (si == 5)
+
+        wm_file = str(Path(out_folder) / "wm_mask.nii.gz")
+        ants.image_write(wm, wm_file)
     elif sys.platform == 'darwin':
         res = None
 
@@ -35,12 +41,7 @@ def wm_segmentation(t1, out_folder):
 
 
 
-    si = res['segmentation_image']
-    wm = (si == 3) or (si == 4) or (si == 5)
 
-
-    wm_file = str(Path(out_folder) / "wm_mask.nii.gz")
-    ants.image_write(wm, wm_file)
 
 
 def binarise_threshold(filename, threshold, save_filename):

@@ -7,9 +7,6 @@ import nibabel as nib
 import numpy as np
 from intensity_normalization.cli.fcm import fcm_main
 import sys
-import ants
-if sys.platform == 'win32':
-    import antspynet
 
 
 def register_t2_to_t1(script_home, t1, t2, out_name):
@@ -47,9 +44,11 @@ def wm_segmentation(t1, out_folder):
     """
     print(t1)
 
-    t1_image = ants.image_read(t1)
+
     if sys.platform == 'win32':
         import antspynet
+        import ants
+        t1_image = ants.image_read(t1)
         res = antspynet.deep_atropos(t1_image, verbose=True)
 
         si = res['segmentation_image']
