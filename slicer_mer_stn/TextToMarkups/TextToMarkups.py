@@ -29,14 +29,15 @@ def convert_to_markup_node(df_text):
 
     # read electrode from text ()
     cols = [ x for x in df_text.columns if x.endswith('XYZ')]
-    df_text = df_text[cols].applymap(lambda x: [float(a) for a in x.split(';')])
+    df_text = df_text[cols].map(lambda x: [float(a) for a in x.split(';')])
 
 
     for col in cols:
         i = 0
         text = col.split("_")[-1][:-3]
         for mrl in df_text[col]:
-            markup_node.AddFiducial(mrl[0], mrl[1], mrl[2], f"{text} " + str(i))
+            markup_node.AddControlPointWorld(mrl[0], mrl[1], mrl[2], f"{text} " + str(i))
+            #markup_node.AddFiducial(mrl[0], mrl[1], mrl[2], f"{text} " + str(i))
             i += 1
 
     return markup_node

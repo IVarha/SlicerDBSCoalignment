@@ -37,7 +37,11 @@ import mer_lib.processor as proc
 import numpy as np
 import qt
 import vtk
-
+try:
+    import bayes_opt
+except ImportError:
+    slicer.util.pip_install('bayesian-optimization')
+    import bayes_opt
 try:
     import torch
 except ImportError:
@@ -86,7 +90,7 @@ import dataclasses
 class ShiftResult:
     number_of_records: int
     cor_recs_a_shift: int
-    cor_rect_b_shift: int
+    cor_recs_b_shift: int
     shift: np.ndarray
     scaling: np.ndarray
     optimise_func : float
@@ -94,7 +98,7 @@ class ShiftResult:
     def __str__(self):
         return (f"Number of records: {self.number_of_records}, "
                 f"Correct records after shift: {self.cor_recs_a_shift}, "
-                f"Correct records before shift: {self.cor_rect_b_shift}, Shift: {self.shift}, Scaling: {self.scaling}")
+                f"Correct records before shift: {self.cor_recs_b_shift}, Shift: {self.shift}, Scaling: {self.scaling}")
 
 
 
@@ -261,6 +265,7 @@ def check_points_inside_vtk_mesh(mesh, points):
 
     return is_inside
 
+RATIO = 0.5
 
 def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Tensor:
     """
@@ -274,14 +279,16 @@ def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Te
         torch.Tensor: Tensor representing the correctly placed bitmap.
     """
     x = []
+    r = (2*RATIO)
+    #print("RATIO", r)
     # #print(labeled_points.shape)
     # #print(current_output.shape)
     for i in range(len(current_output)):
         if current_output[i] != labeled_points[i]:  # not equal
             if labeled_points[i] == 1: # if labeled as inside the mesh but put to outside
-                x.append(1)
+                x.append(r)
             else: # if labeled as outside the mesh but put to inside of the mesh
-                x.append(1)
+                x.append(2-r)
         else:
             x.append(0)
 
@@ -293,7 +300,7 @@ def distances_to_mesh(points, mesh_vertices):
     Calculate the distances from given points to a mesh composed of vertices.
 
     Args:
-        points (torch.Tensor): Tensor of shape (N, 3) representing N points.
+        points (torch.Tensor): Tensor of shape (N, 3) representing N points (MERS).
         mesh_vertices (torch.Tensor): Tensor of shape (M, 3) representing M vertices of the mesh.
 
     Returns:
@@ -360,7 +367,7 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
     if isinstance(orig_points, np.ndarray):
         orig_points = torch.from_numpy(orig_points)
     # #print(orig_points)
-    new_points = (orig_points - central_pt)*scalling - shift + central_pt
+    new_points = orig_points - shift
 
     points_inside_posttrans = check_points_inside_vtk_mesh(mesh, new_points.detach().numpy())
 
@@ -404,8 +411,7 @@ def subgradient_optimisation_criterion(shift,scaling, function):
 
 def optimise_mer_signal(opt_input : OptimisationInput,
                         lambda1=1.0,
-                        distance=0.2,
-                        learning_rate=0.004):
+                        distance=0.2,optimiser=None):
     """
     optimise the signal of the mer data to get the best overlap with the mesh
     input: mer_data: torch tensor unscalled mer data
@@ -417,25 +423,30 @@ def optimise_mer_signal(opt_input : OptimisationInput,
     # compute the mer direction vector
     mer_data = opt_input.mer_data
     # compute criterion function
+    global RATIO
+    RATIO= distance
 
     d = opt_input.electrode_direction
-    print("distance multiplier", d)
-    optimise_f = lambda x, y, verbose=False: (
+
+    #print("distance multiplier", d)
+    optimise_f = lambda x1, verbose=False: (
              lambda1* optimisation_criterion(mer_data, opt_input.in_out,
-                                             shift=x[:3] + d * x[3], scalling=y, mesh=opt_input.mesh, verbose=verbose)
-            + (np.linalg.norm(x[:3] + d * x[3])) # penalize the shift
-            + distance*(np.linalg.norm(y - 1)) # penalize the scalling to be close to 1
+                                             shift=x1[:3],# + d * x[3],
+                                             scalling=0, mesh=opt_input.mesh, verbose=verbose)
+            #+ distance *(np.linalg.norm(x[:3]#+ d * x[3]
+                              #)) # penalize the shift
+            #+ distance*(np.linalg.norm(y - 1)) # penalize the scalling to be close to 1
             #+ (0 if x[3] < 1.5 else 1000) # penalize the scalling > 1
-            + (0 if np.linalg.norm(x[:3]) < 1.5 else 1000) # penalize the shift > 2
+            + (0 if np.linalg.norm(x1[:3]) < 1.5 else 1000) # penalize the shift > 2
             #+ (torch.linalg.norm(x) if torch.linalg.norm(x) > distance else 1 / torch.linalg.norm(x))
-    ).item()
+    )#.item()
 
     x = opt_input.shift.clone().detach().requires_grad_(True)
     y = torch.tensor([1.0, 1.0, 1.0], requires_grad=True)
     #print("------------------------------")
     #print("Origin estimated value of shift:", x)
 
-    start_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=y, mesh=opt_input.mesh,
+    start_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=0, mesh=opt_input.mesh,
                                                      return_weight=True)
 
     #
@@ -445,37 +456,39 @@ def optimise_mer_signal(opt_input : OptimisationInput,
     min_value = 0.7
     max_value = 1.3
 
-    op_ = lambda x,v=False: optimise_f(x[:4], x[4:], v)
-    x = opt_input.shift.clone().detach().numpy().reshape((4)).tolist() + [1.1, 1.1, 1.1]
+    op_ = lambda x,v=False: optimise_f(x, v)
+    x = opt_input.shift.clone().detach().numpy().reshape((3)).tolist()
     x = np.array(x)
     #print(x)
     #print("Origin estimated value of the function:", op_(x,True))
     #print("Origin estimated distance", np.linalg.norm(x[:3]))
     from scipy import optimize as opt
 
-    bounds = [(-2, 2), (-2, 2), (-2, 2),(-1.5,1.5),
-              (min_value, max_value), (min_value, max_value), (min_value, max_value)]
+    res = optimiser(op_)
+    #print(res)
+    x = res['x']
 
-    res = opt.differential_evolution(op_, bounds, disp=True,x0=x,polish=True,seed=42)
+
+    #res = opt.differential_evolution(op_, bounds, disp=True,x0=x,polish=True,seed=42)
     # res = opt.minimize(op_, res.x,method='Powell',options={'disp': True},
     #                   bounds=bounds)
 
-    x = res.x
+    #x = res.x
     #print(res)
     #print("\n\n")
     #print("Optimized value of x:", x, " y:", y)
-    print("final estimated distance", np.linalg.norm(x[:3] + d * x[3]))
+    print("final estimated distance", np.linalg.norm(x[:3]))
     #print("Optimized value of the function:", op_(torch.from_numpy(x),True))
     #print("------------------------------")
-    final_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3] + d * x[3], scalling=x[4:],
+    final_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3] , scalling=0,
                                                      mesh=opt_input.mesh,return_weight=True)
 
     # wrong labels to debug
-    wl = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3] + d * x[3], scalling=x[4:],
+    wl = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=0,
                                 mesh=opt_input.mesh,return_wrong_labels=True)
     #print("wrong labels", wl)
-    return  ShiftResult(mer_data.shape[0],final_electrodes_number,start_electrodes_number,shift=x[:3] + d * x[3],scaling=x[4:],
-                        optimise_func=res.fun),wl
+    return  ShiftResult(mer_data.shape[0],final_electrodes_number,start_electrodes_number,shift=x[:3],scaling=0,
+                        optimise_func=res['fun']),wl
 
 
 #
@@ -1333,14 +1346,14 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         ScriptedLoadableModuleLogic.__init__(self)
 
         self.net_shift = TransformerShiftPredictor(4, 64, 1, 1, 10)
-        cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('mps'))
+        cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
         self.net_shift.load_state_dict(cd_state_dict)
 
         self.mer_transforms = _read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
 
         self.mer_classification_net = TransformerClassifier(4, 64, 1, 1)
         cd_state_dict = torch.load(self.resourcePath('nets/transformer_classifier.pt'),
-                                   map_location=torch.device('mps'))
+                                   map_location=torch.device('cpu'))
         self.mer_classification_net.load_state_dict(cd_state_dict)
 
     def read_leadOR_txt(self, text_node: vtkMRMLTextNode):
@@ -1416,11 +1429,11 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         to_mni = vtk.vtkMatrix4x4()
         to_mni_transform.GetMatrixTransformToWorld(to_mni)
 
-        df[cols] = df[cols].applymap(lambda x: [float(a) for a in x.split(';')])
+        df[cols] = df[cols].map(lambda x: [float(a) for a in x.split(';')])
         # apply the transformation to each cell of df[cols]
-        df[cols] = df[cols].applymap(lambda x: np.array(to_mni.MultiplyPoint(x + [1])[:3]))
+        df[cols] = df[cols].map(lambda x: np.array(to_mni.MultiplyPoint(x + [1])[:3]))
         if require_mirror:
-            df[cols] = df[cols].applymap(lambda x: x * np.array([-1, 1, 1]))
+            df[cols] = df[cols].map(lambda x: x * np.array([-1, 1, 1]))
         cols = [col for col in df.columns if (not col.endswith('XYZ')) and (col != 'RecordingSiteDTT')]
 
         result_np = np.vstack(
@@ -1564,7 +1577,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
             output = self.mer_classification_net(mer_data) > 0.5
         return output
 
-    def _predict_shift(self, opt_input, lambda1=1.0, distance=0.2, lr=0.004):
+    def _predict_shift(self, opt_input, lambda1=1.0, distance=0.2, optimiser=None):
         """
         predict shift
         input:
@@ -1573,14 +1586,14 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         mesh: vtk.vtkPolyData mesh to be used for the optimisation
         """
 
-        res_ms,wrong_labels= optimise_mer_signal(opt_input, lambda1, distance,
-                                   learning_rate=lr)
+        res_ms,wrong_labels = optimise_mer_signal(opt_input, lambda1, distance,
+                                   optimiser = optimiser)
         return res_ms, opt_input.in_out,wrong_labels
         pass
 
     def predict_shift(self, text_node: "vtkMRMLTextNode", side: bool,
                       to_mni: vtkMRMLLinearTransformNode, mesh: vtk.vtkPolyData, pcas, lambda1, distance,
-                      learning_rate):
+                      optimiser = None):
         """
         Predicts the shift for electrode placement based on MER data and mesh.
 
@@ -1627,9 +1640,9 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         #print("classes ", classes.numpy().reshape((num_of_elec,-1)).transpose())
         shift_result, classes, wrong_labels = self._predict_shift(
             OptimisationInput(mer_data=unscalled_tensor,
-                              in_out=classes, shift=torch.Tensor([0.0,0.0,0.0,0.0]),
+                              in_out=classes, shift=torch.Tensor([0.0,0.0,0.0]),
                               scalling=torch.Tensor([1.0,1.0,1.0]), number_of_electrodes=num_of_elec, mesh=mesh),
-            lambda1, distance,learning_rate)
+            lambda1, distance, optimiser = optimiser)
 
         # reshape wrong labels tensor to same shape as classes
         wrong_labels = wrong_labels.reshape(classes.shape)

@@ -123,6 +123,9 @@ def _compute_min_max_scaler(pt_min, pt_max):
     return a
 
 
+
+
+
 class STNSegmenter(ScriptedLoadableModule):
     """Uses ScriptedLoadableModule base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -302,6 +305,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
 
+
     def onVolumeSelect(self, x: vtkMRMLScalarVolumeNode, name):
         # get storage node of x
         if x is not None:
@@ -349,9 +353,15 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyWMSeg(self) -> None:
         print("start on onApplyWMSeg")
+        if sys.platform == 'win32':
+            slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
+                                                 out_folder=self.temp_workdir.name)
+        else:
+            import DBS_Settings
+            pyth = DBS_Settings.PythonExeDBSPath().getValue()
+            slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
+                                                 out_folder=self.temp_workdir.name, pyth=pyth)
 
-        slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
-                                             out_folder=self.temp_workdir.name)
         self.wm_seg_done = True
         print("fin on appl")
 
@@ -387,7 +397,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.inputSelector.currentNodeChanged(t1_node)
 
     def onSegmentationButtonClicked(self):
-        mm_offset = 2
+
         print("Starting segmentation")
 
         left, right = self.logic.segmentSTNs(self.t2_node)
@@ -527,8 +537,8 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         self.det_mask: SubcorticalMask = _read_pickle(self.resourcePath('nets/detect_mask.pkl'))
         self.processing_folder = None
         self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
-        net = CenterDetector().to('mps')
-        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('mps'))
+        net = CenterDetector().to('cpu')
+        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('cpu'))
         net.load_state_dict(cd_state_dict)
         self.center_detector = net
 
@@ -539,9 +549,10 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         # load segmentation model
         self.shape_histogram = _read_pickle(self.resourcePath('nets/shape_hist.pkl'))
         net = CenterAndPCANet(self.shape_pca_res[1])
-        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('mps'))
+        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
         net.load_state_dict(cd_state_dict)
         self.shape_predictor = net
+
 
     def getParameterNode(self):
         return STNSegmenterParameterNode(super().getParameterNode())
@@ -624,14 +635,18 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
             ants.image_write(mask, mask_filename)
             ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
         elif sys.platform == 'darwin':
-            cmd = "python -c 'import antspynet;import ants;from pathlib import Path;"
+            import DBS_Settings
+            pyth = DBS_Settings.PythonExeDBSPath().getValue()
+            cmd = f"{pyth} -c 'import antspynet;import ants;from pathlib import Path;"
             cmd += f"img=ants.image_read(\"{image_name}\");"
             cmd += f"mask=antspynet.brain_extraction(img, \"t1\") > 0.8;"
             cmd += f"masked_image=img*mask;"
             cmd += f"ants.image_write(mask, \"{mask_filename}\");"
             cmd += f"ants.image_write(masked_image, \"{str(Path(temp_dir_path) / 't1.nii.gz')}\")'"
+
+            print(cmd)
             cmd = shlex.split(cmd)
-            subprocess.check_output(cmd)
+            subprocess.check_output(cmd,env={})
 
         print("FINISHED EXTRACTOR")
         # cmd = [sys.executable, self.resourcePath("py/bet.py"), str(image_name), mask_filename, str(Path(temp_dir_path) / "t1.nii.gz")]
@@ -646,6 +661,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         t2_path = t2.GetFileName()
         print(t1_path)
         print(t2_path)
+
         # Elastix.ElastixLogic().register()
         slicer_preprocessing.elastix_registration(
             ref_image=t1_path,
@@ -656,7 +672,21 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
          .rename((out_name)))
 
     def wm_segmentation(self, t1: str, out_folder: str) -> None:
-        slicer_preprocessing.wm_segmentation(t1, out_folder)
+        if sys.platform == 'win32':
+            slicer_preprocessing.wm_segmentation(t1, out_folder)
+        else:
+            import DBS_Settings
+            pyth = DBS_Settings.PythonExeDBSPath().getValue()
+            slicer_preprocessing.wm_segmentation(t1, out_folder,pyth)
+
+
+    def _get_elastix_executable(self):
+        import Elastix
+        lgc= Elastix.ElastixLogic()
+
+        res = Path(lgc.getElastixBinDir())/ lgc.elastixFilename
+
+        return str(res)
 
     def intensity_normalisation(self, out_folder: str, t2_file_name: str) -> None:
         slicer_preprocessing.intensity_normalisation(out_folder,t2_file_name)
@@ -665,10 +695,13 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
         elastix_affine = self.resourcePath('elastix/affine_mri.txt')
         struct_image = str(Path(workdir) / "t1.nii.gz")
-        slicer_preprocessing.elastix_registration(ref_image=mni,
+        cmd = slicer_preprocessing.elastix_registration_cmd(ref_image=mni,
                                                   flo_image=struct_image,
                                                   elastix_parameters=elastix_affine,
                                                   out_folder=workdir)
+        cmd = [self._get_elastix_executable()] + cmd
+        subprocess.check_output(cmd)
+
         tfm_file = Path(workdir) / "TransformParameters.0.tfm"
         transfortm_node = slicer.util.loadTransform(tfm_file)
 
@@ -915,3 +948,4 @@ class STNSegmenterTest(ScriptedLoadableModuleTest):
             shape, result_center = apply_mirror(shape, result_center)
 
         return change_mesh(mesh, shape), result_center, res_pts
+
