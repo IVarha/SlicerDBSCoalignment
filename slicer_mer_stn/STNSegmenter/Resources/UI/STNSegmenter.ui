@@ -151,12 +151,46 @@
        </widget>
       </item>
       <item row="5" column="0" colspan="2">
-       <widget class="QPushButton" name="twoStepCoregistrationButton">
-        <property name="text">
-         <string>Two-step coregistration to MNI</string>
+ <layout class="QHBoxLayout" name="twoStepCoregistrationLayout">
+  <item>
+   <widget class="QComboBox" name="twoStepCoregistrationDropdown">
+    <property name="toolTip">
+     <string>Select the registration method.</string>
+    </property>
+    <property name="editable">
+     <bool>false</bool>
+    </property>
+    <item>
+     <property name="text">
+      <string>Rigid</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>Affine</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>Similarity</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>SyNRA</string>
         </property>
-       </widget>
-      </item>
+    </item>
+   </widget>
+  </item>
+  <item>
+   <widget class="QPushButton" name="twoStepCoregistrationButton">
+    <property name="text">
+     <string>Coregistration to MNI</string>
+    </property>
+   </widget>
+  </item>
+ </layout>
+</item>
       <item row="6" column="0" colspan="2">
        <widget class="QPushButton" name="segmentationButton">
         <property name="text">
@@ -269,6 +303,23 @@
     </hint>
    </hints>
   </connection>
+
+<connection>
+   <sender>twoStepCoregistrationDropdown</sender>
+   <signal>currentTextChanged(QString)</signal>
+   <receiver>STNSegmenter</receiver>
+   <slot>onMNIRegistrationMethodChanged(QString)</slot>
+   <hints>
+      <hint type="sourcelabel">
+         <x>120</x>
+         <y>200</y>
+      </hint>
+      <hint type="destinationlabel">
+         <x>150</x>
+         <y>250</y>
+      </hint>
+   </hints>
+</connection>
   <connection>
    <sender>STNSegmenter</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
