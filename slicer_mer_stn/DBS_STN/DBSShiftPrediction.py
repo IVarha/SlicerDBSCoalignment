@@ -1,6 +1,6 @@
 import logging
 import slicer
-
+import scipy.optimize as optimize
 try:
     import pandas as pd
 except ImportError:
@@ -18,6 +18,7 @@ from typing import Annotated, Optional, Tuple, List, Union
 
 from torch import nn
 from torch.nn import functional as F
+from scipy.optimize import minimize
 
 try:
     import fsl.data.image as fim
@@ -26,14 +27,7 @@ except ImportError:
     import fsl.data.image as fim
 import fsl.transform.flirt as fl
 
-try:
-    import mer_lib.artefact_detection as ad
-except ImportError:
-    #slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\MER_lib')
-    import mer_lib.artefact_detection as ad
 
-import mer_lib.feature_extraction as fe
-import mer_lib.processor as proc
 import numpy as np
 import qt
 import vtk
@@ -77,11 +71,9 @@ from slicer.parameterNodeWrapper import (
 from slicer.util import VTKObservationMixin
 
 from Lib import slicer_preprocessing
-from Lib.image_utils import SlicerImage
 from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, \
     clasify_mers, extract_points_from_mesh
-from Lib.utils_file import get_images_in_folder
-from Lib.visualisiation import LeadORLogic
+
 import dataclasses
 
 
@@ -93,26 +85,30 @@ class ShiftResult:
     cor_recs_b_shift: int
     shift: np.ndarray
     scaling: np.ndarray
-    optimise_func : float
+    optimised_value_orig : float
+    optimised_value_final : float
+    mer_classes: np.array
+    mer_nrms : np.array
 
     def __str__(self):
         return (f"Number of records: {self.number_of_records}, "
                 f"Correct records after shift: {self.cor_recs_a_shift}, "
                 f"Correct records before shift: {self.cor_recs_b_shift}, Shift: {self.shift}, Scaling: {self.scaling}")
 
+    # convert to dictionary
+    def to_dict(self):
 
+        res = { "number_of_records": self.number_of_records,
+                "cor_recs_a_shift": self.cor_recs_a_shift,
+                "cor_recs_b_shift": self.cor_recs_b_shift,
+                "shift": self.shift,
+                "scaling": self.scaling,
+                "optimised_value_orig": self.optimised_value_orig,
+                "optimised_value_final": self.optimised_value_final,
+                }
 
-def nrms_normalisation(data: MER_data):
-    """
-    across all trajectories together:
-        NRMS = 1 + (NRMS1-1) / (p95(NRMS1)-1)
-    """
+        return res
 
-    extracted_features = data.extracted_features
-    percentile_95 = np.percentile(extracted_features, 95)
-    data.extracted_features = 1 + (extracted_features - 1) / (percentile_95 - 1)
-
-    return data
 
 
 def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
@@ -178,33 +174,6 @@ def convert_to_numpy_array(matrix):
 def apply_transformation(entry_target, transformation_matrix):
     return cross_generation_mni(ent_tg_native=entry_target, to_mni=transformation_matrix)
 
-
-def read_mer_data(file_path, pattern):
-    return MER_data.read_ontario_data(str(Path(file_path).parent), pattern)
-
-
-def process_mer_data(mer_data):
-    """
-    Process the MER data using a series of predefined steps.
-
-    Args:
-        mer_data (list): The MER data to be processed.
-
-    Returns:
-        list: The processed MER data.
-    """
-
-    def min_max_scaler(data: MER_data):
-        extracted_features = data.extracted_features
-        data.extracted_features = (extracted_features - extracted_features.min()) / (
-                extracted_features.max() - extracted_features.min())
-
-        return data
-
-    runner = proc.Processor()
-    runner.set_processes([ad.covariance_method, fe.nrms_calculation, nrms_normalisation, min_max_scaler])
-    mer_data = runner.run(mer_data)
-    return mer_data
 
 
 def extract_electrode_records(entry_target, mer_data, transformation_matrix):
@@ -324,9 +293,12 @@ class OptimisationInput:
     mer_data: torch.Tensor # original of electrodes (x,y,z,RMS)
     in_out: torch.Tensor # in_out values of electrodes (1 inside, 0 outside) output of classifier
     shift : torch.Tensor # init shift vector
-    scalling: torch.Tensor # init scalling vector
+    scaling: torch.Tensor # init scaling vector
     mesh: vtk.vtkPolyData # mesh object
     number_of_electrodes: int # number of electrodes
+    max_shift : float =2
+    min_max_scale : Tuple[float, float] = (1, 1+1e-12)
+
 
 
     def __post_init__(self):
@@ -367,12 +339,13 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
     if isinstance(orig_points, np.ndarray):
         orig_points = torch.from_numpy(orig_points)
     # #print(orig_points)
-    new_points = orig_points - shift
+    new_points = (orig_points - central_pt)*scalling - shift + central_pt
 
     points_inside_posttrans = check_points_inside_vtk_mesh(mesh, new_points.detach().numpy())
 
     weight = generate_correctly_placed_bitmap(in_out, points_inside_posttrans)
-
+    if return_weight:
+        return ((weight > 0).sum()).item()
     if verbose:
         pass
         #print("Wrongly marked points: ", str((weight > 0).sum()))
@@ -391,8 +364,7 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
     result_error = result_error/ weight.shape[0]# / (weight > 0).sum()
 
     result_error = result_error #+ weight.sum()
-    if return_weight:
-        return ((weight > 0).sum()).item()
+
     if return_wrong_labels:
         #print("weights > 0", weight>0)
         return weight > 0
@@ -411,7 +383,7 @@ def subgradient_optimisation_criterion(shift,scaling, function):
 
 def optimise_mer_signal(opt_input : OptimisationInput,
                         lambda1=1.0,
-                        distance=0.2,optimiser=None):
+                        distance=0.2, optimiser=None):
     """
     optimise the signal of the mer data to get the best overlap with the mesh
     input: mer_data: torch tensor unscalled mer data
@@ -426,43 +398,43 @@ def optimise_mer_signal(opt_input : OptimisationInput,
     global RATIO
     RATIO= distance
 
-    d = opt_input.electrode_direction
-
     #print("distance multiplier", d)
     optimise_f = lambda x1, verbose=False: (
              lambda1* optimisation_criterion(mer_data, opt_input.in_out,
                                              shift=x1[:3],# + d * x[3],
-                                             scalling=0, mesh=opt_input.mesh, verbose=verbose)
-            #+ distance *(np.linalg.norm(x[:3]#+ d * x[3]
+                                             scalling=x1[3], mesh=opt_input.mesh, verbose=verbose)
+            +  (np.linalg.norm(x1[:3]))#+ d * x[3]
                               #)) # penalize the shift
             #+ distance*(np.linalg.norm(y - 1)) # penalize the scalling to be close to 1
             #+ (0 if x[3] < 1.5 else 1000) # penalize the scalling > 1
-            + (0 if np.linalg.norm(x1[:3]) < 1.5 else 1000) # penalize the shift > 2
+            + (0 if np.linalg.norm(x1[:3]) < opt_input.max_shift else 1000000) # penalize the shift > 2
             #+ (torch.linalg.norm(x) if torch.linalg.norm(x) > distance else 1 / torch.linalg.norm(x))
     )#.item()
 
-    x = opt_input.shift.clone().detach().requires_grad_(True)
+    x = torch.tensor([0.0, 0.0, 0.0, 1.0], requires_grad=True)
     y = torch.tensor([1.0, 1.0, 1.0], requires_grad=True)
     #print("------------------------------")
     #print("Origin estimated value of shift:", x)
 
-    start_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=0, mesh=opt_input.mesh,
+    start_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=1, mesh=opt_input.mesh,
                                                      return_weight=True)
 
     #
 
     # Define the optimizer
 
-    min_value = 0.7
-    max_value = 1.3
+    # min_value = 0.7
+    # max_value = 1.3
 
     op_ = lambda x,v=False: optimise_f(x, v)
-    x = opt_input.shift.clone().detach().numpy().reshape((3)).tolist()
+    x = np.array([0.0, 0.0, 0.0, 1.0])
     x = np.array(x)
     #print(x)
-    #print("Origin estimated value of the function:", op_(x,True))
+
+    orig_criterion = op_(x,True)
+    print("Origin estimated value of the function:", orig_criterion)
     #print("Origin estimated distance", np.linalg.norm(x[:3]))
-    from scipy import optimize as opt
+
 
     res = optimiser(op_)
     #print(res)
@@ -478,17 +450,20 @@ def optimise_mer_signal(opt_input : OptimisationInput,
     #print("\n\n")
     #print("Optimized value of x:", x, " y:", y)
     print("final estimated distance", np.linalg.norm(x[:3]))
-    #print("Optimized value of the function:", op_(torch.from_numpy(x),True))
+    print("Optimized value of the function:", op_(torch.from_numpy(x),True))
     #print("------------------------------")
-    final_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3] , scalling=0,
+    final_electrodes_number = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3] , scalling=x[3],
                                                      mesh=opt_input.mesh,return_weight=True)
 
     # wrong labels to debug
-    wl = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=0,
+    wl = optimisation_criterion(mer_data, opt_input.in_out, shift=x[:3], scalling=x[3],
                                 mesh=opt_input.mesh,return_wrong_labels=True)
     #print("wrong labels", wl)
-    return  ShiftResult(mer_data.shape[0],final_electrodes_number,start_electrodes_number,shift=x[:3],scaling=0,
-                        optimise_func=res['fun']),wl
+    return  ShiftResult(mer_data.shape[0], cor_recs_a_shift=final_electrodes_number,
+                        cor_recs_b_shift=start_electrodes_number, shift=x[:3], scaling=x[3],
+                        optimised_value_orig=orig_criterion,
+                        optimised_value_final=res['fun'],
+                        mer_classes=opt_input.in_out.numpy(),mer_nrms=mer_data[:,3].numpy()),wl
 
 
 #
@@ -571,6 +546,148 @@ def registerSampleData():
         # This node name will be used when the data set is loaded
         nodeNames='DBSShiftPrediction2'
     )
+
+########optimisers
+
+
+class OptimisationMethod:
+    def __init__(self, settings):
+        self.bounds = [(-2, 2), (-2, 2), (-2, 2)]
+
+
+
+
+
+
+class BayesianOptimization(OptimisationMethod):
+    def __init__(self, settings):
+        super().__init__(settings)
+
+    def __call__(self, function):
+        wraf_f = lambda x,y,z:- function([x,y,z])
+        pbounds  = { 'x': (-2,2), 'y': (-2,2), 'z': (-2,2)}
+        meth = bo.BayesianOptimization( wraf_f, pbounds)
+        meth.maximize(init_points=10, n_iter=140)
+
+        res = meth.max
+
+        tmp = {"x": np.array([res['params']['x'], res['params']['y'], res['params']['z']]), "fun": -res['target']}
+
+
+        return tmp
+    pass
+
+class DifferentialEvolution(OptimisationMethod):
+    def __init__(self, settings):
+        super().__init__(settings)
+
+
+    def __call__(self, function):
+
+        res = optimize.differential_evolution(function, self.bounds)
+        print("calling a function")
+
+        tmp = {"x": res.x, "fun": res.fun}
+        return tmp
+    pass
+
+class PowellWithBounds:
+    def __init__(self, settings):
+        self.bounds = settings['bounds']
+        self.initial_guess = np.zeros(len(self.bounds))  # Initial guess in transformed space
+
+    def _transform(self, z):
+        """Transforms unbounded variables z into bounded variables x."""
+        x = []
+        for zi, (low, high) in zip(z, self.bounds):
+            if low is None or high is None:
+                x.append(zi)  # No bounds, keep original
+            else:
+                x.append(low + (high - low) / (1 + np.exp(-zi)))
+        return np.array(x)
+
+    def _inverse_transform(self, x):
+        """Inverse transform (for initialization purposes)."""
+        z = []
+        for xi, (low, high) in zip(x, self.bounds):
+            if low is None or high is None:
+                z.append(xi)  # No bounds, keep original
+            else:
+                zi = -np.log((high - xi) / (xi - low) - 1)
+                z.append(zi)
+        return np.array(z)
+
+    def __call__(self, function):
+        def transformed_function(z):
+            x = self._transform(z)  # Map z into bounds
+            return function(x)
+
+        res = optimize.minimize(transformed_function, self.initial_guess, method='Powell')
+        x_optimized = self._transform(res.x)  # Transform back to bounded space
+        return {"x": x_optimized, "fun": res.fun}
+
+
+class Powell(OptimisationMethod):
+    def __init__(self, settings):
+        super().__init__(settings)
+        self.bounds = settings['bounds']
+
+    def __call__(self, function):
+
+        res = optimize.minimize(function, [0,0,0,1], method='SLSQP',bounds=self.bounds)
+        tmp = {"x": res.x, "fun": res.fun}
+        return tmp
+    pass
+
+
+class Brute(OptimisationMethod):
+
+    def __init__(self, settings):
+        super().__init__(settings)
+        bounds = settings['bounds']
+
+
+        n_s = 7
+        ds = [((bounds[i][1] - bounds[i][0])/ ( n_s -1)) for i in range(len(bounds))]
+        self.ranges = [slice(bounds[0][0], bounds[0][1], ds[0]),
+                       slice(bounds[1][0], bounds[1][1], ds[1]),
+                       slice(bounds[2][0], bounds[2][1], ds[2]),
+                       slice(bounds[3][0], bounds[3][1], ds[3])]
+
+        #self.ranges = [slice(-2, 2, 0.5), slice(-2, 2, 0.5), slice(-2, 2, 0.5), slice(0.8, 1.2, 0.1)]
+
+    def __call__(self, function):
+        res = optimize.brute(function, self.ranges, full_output=True, finish=optimize.fmin,workers=1)
+        self.res = res
+        #print(res)
+        #print("laaal",res[3].shape)
+        res1 = res[3].flatten()
+        index = np.where(res1==res1.min())[0][0]
+        x = res[2].reshape((4,-1))[:,index]
+
+        tmp = {"x": x, "fun": res1[index]}
+        return tmp
+
+
+class BrutePowell(OptimisationMethod):
+
+        def __init__(self, settings):
+            super().__init__(settings)
+            bounds = settings['bounds']
+
+            br = Brute({'bounds': bounds})
+            self.br = br
+            self.pb = PowellWithBounds({'bounds': bounds})
+
+
+        def __call__(self, function):
+            res = self.br(function)
+            init = res['x']
+            print("init", init)
+            self.pb.initial_guess = init
+            res = self.pb(function)
+            print("res", res['x'])
+            return res
 
 
 #
@@ -793,6 +910,9 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.shape_predictor = None
         self.center_detector_scaller = None
         self.cent_det_hist = None
+        self.shift_mesh = False # flag to shift mesh
+        self.max_shift = 2.0
+
         self.det_mask = None
         self.intensity_normalisation_done = False
         self.wm_seg_done = False
@@ -834,6 +954,13 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self.ui.textinputSelector.currentNodeChanged.connect( self.onInputTextSelected)
         self.ui.transform_inputSelector.currentNodeChanged.connect(self.onInputTransformSelected)
         self.ui.merFinalButton.clicked.connect(self.on_calculate_shift)
+
+        # Add connections for the new widgets
+        self.ui.meshOrElectrodesToggle.toggled.connect(self.onToggleShiftMeshOrElectrodes)
+        self.ui.weightSpinBox.valueChanged.connect(self.onMaxShiftChanged)
+        self.ui.scallingRangeWidget.valuesChanged.connect(self.onScalingRangeChanged)
+        self.ui.scallingRangeWidget.setValues(1,1+ 1e-12) # set default values
+
         # self.ui.merApplyTransformation.clicked.connect(self.apply_transformation_mer)
 
         # Make sure parameter node is initialized (needed for module reload)
@@ -849,12 +976,35 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     def onInputTransformSelected(self, node: vtkMRMLTransformNode):
         self.to_mni = node
 
+    def onScalingRangeChanged(self, min_value, max_value):
+        print(f"Scaling range changed: Min = {min_value}, Max = {max_value}")
+        self.scaling_range = (min_value, max_value)
+
+        # Add further logic here to update the output based on the new scaling range.
+
     def onInputTextSelected(self, node: vtkMRMLTextNode):
         self.text = node
-        #print('Text selected')
         #
         ### add event when the text is changed
         # self.text.AddObserver(vtk.vtkCommand.ModifiedEvent, self.onTextModified)
+
+
+    def onToggleShiftMeshOrElectrodes(self, checked):
+        """
+        Handler for the checkbox toggle that determines whether to shift mesh or electrodes.
+        """
+        self.shift_mesh = checked
+        if self.shift_mesh:
+            print("Shifting the mesh.")
+        else:
+            print("Shifting the electrodes.")
+
+    def onMaxShiftChanged(self, value):
+        """
+        Handler for the weight adjustment spin box value change.
+        """
+        self.max_shift = value
+        print(f"Weight adjustment set to: {self.max_shift}")
 
     def onTextModified(self, node):
 
@@ -863,17 +1013,25 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # compute shift transformation
         #try multiple runs if fails
         params = \
-            [ [5,3]#,
+            [ [90,0.5]#,
               # [1,0.5],
               # [1,0.2]
 
                    ]
         result_transforms = {}
         mark = False
+        bds = {'bounds': [(-self.max_shift, self.max_shift),
+                          (-self.max_shift, self.max_shift),
+                          (-self.max_shift, self.max_shift),
+                          self.scaling_range]}
+
         for param in params:
 
-            res_transform, text_node,shift_result, wrong_labels= self.logic.predict_shift(node, self.side, self.to_mni, self.mesh_copy, self.pcas,
-                                                                lambda1=param[0], distance=param[1], learning_rate=0.01)
+            res_transform, text_node,shift_result, wrong_labels= self.logic.predict_shift(node, self.side,
+                                                                                          self.to_mni,
+                                                                                          self.mesh_copy, self.pcas,
+                                                                                          max_shift=self.max_shift,
+                                                                lambda1=param[0], distance=param[1], optimiser=BrutePowell(bds))
 
             if shift_result.cor_recs_a_shift < 10:
                 mark = True
@@ -882,7 +1040,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 pass
             else:
                 result_transforms[shift_result.cor_recs_a_shift] = [res_transform, text_node]
-        print(shift_result)
+        print("res_transform!!!",res_transform)
         if not mark:
             num_elecs = min(result_transforms.keys())
             res_transform, text_node = result_transforms[num_elecs]
@@ -912,13 +1070,10 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
             return
 
         else:
-            #print("mesh selected")
             mesh_copy = self.logic.create_mesh_copy(node)
             # apply transformation to vtk
-            #print("mesh1 before", mesh_copy)
             mesh_copy = self.apply_transformation_to_polydata(self.to_mni, mesh_copy) # mesh in mni space
             self.mesh1 = mesh_copy
-            #print("mesh1", self.mesh1)
 
 
         # get cells bounds from node
@@ -937,10 +1092,8 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # change points of the mesh
         if self.side:
             mesh_points = np.reshape(mesh_points, (-1, 3))
-            #print(mesh_points.shape)
             mesh_copy = change_mesh(mesh_copy, mesh_points)
         self.mesh_copy = mesh_copy
-        #print("pcas",self.pcas)
 
         self.mesh_selected = True
 
@@ -1127,14 +1280,11 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         sh.GetItemChildren(sceneId, child_tmp)
         ch2 = []
         sh.GetItemChildren(child_tmp[0], ch2)
-        #print(child_tmp)
         for id in (child_tmp + ch2):
             # check if is folder
             if sh.GetItemLevel(id) == 'Folder':
-                #print(sh.GetItemName(id))
                 name = sh.GetItemName(id)
                 if name.startswith("LeadOR T"):
-                    #print("Creating a folder for", name)
                     result_name = name.split("LeadOR ")[-1]
 
                     # create a copy of a folder and add it to the scene
@@ -1160,13 +1310,11 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                         clonedNode.SetName(id2_name)
                         if clonedNode.IsA('vtkMRMLLinearTransformNode'):
                             transform_id = clonedItemID
-                            #print(111)
                         if id2_node.IsA('vtkMRMLTransformableNode'):
                             if id2_name.endswith("Tube Model"):
                                 transf_plan = slicer.util.getNode("LeadOR:DTT").GetParentTransformNode()
                                 clonedNode.SetAndObserveTransformNodeID(transf_plan.GetID())
                             else:
-                                #print(id2)
                                 transform_node_tmp = id2_node.GetParentTransformNode()
                                 # If a transform node is found, add it to the list
                                 if transform_node_tmp:
@@ -1183,43 +1331,48 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                     #
                     break
 
-    def apply_transformation_mer(self, transform_node: vtkMRMLTransformNode):
+    def apply_transformation_to_node(self, transformation_node: vtkMRMLTransformNode, node):
 
-        dtt_node = slicer.util.getNode("LeadOR:DTT")
+        #dtt_node = slicer.util.getNode("LeadOR:DTT")
 
         # get parent transform node
 
-        par_transf = dtt_node.GetParentTransformNode()
+        par_transf = node.GetParentTransformNode()
 
-        if par_transf.GetParentTransformNode() is None:
-            par_transf.SetAndObserveTransformNodeID(transform_node.GetID())
+        if par_transf is None: # shift
+            node.SetAndObserveTransformNodeID(transformation_node.GetID())
         else:
-            par_transf.SetAndObserveTransformNodeID(None)
+            node.SetAndObserveTransformNodeID(None) # remove the shift
 
     def on_calculate_shift(self):
         try:
             a = slicer.util.getNode('shift')
             slicer.mrmlScene.RemoveNode(a)
-            #print("UNSHIFTED")
             return
         except:
             pass
-        self.onTextModified(self.text)
+        self.onTextModified(self.text) # compute the shift
         self._remove_all_previous_copies()
         # self._copy_leadORIGTL_folder()
 
         # self.copy_leador_electrodes()
         try:
-            self.apply_transformation_mer(slicer.util.getNode('shift'))
+            print("try to apply transformation", self.shift_mesh)
+            if self.shift_mesh:
+
+                self.apply_transformation_to_node(slicer.util.getNode('shift'), self.mesh1)
+            else:
+                dtt_node = slicer.util.getNode("LeadOR:DTT")
+                par_transf = dtt_node.GetParentTransformNode()
+                print("par_transf",par_transf is not None)
+                self.apply_transformation_to_node(slicer.util.getNode('shift'),par_transf)
         except:
             pass
-        try:
-            el_nodes = slicer.util.getNode("Electrodes")
-            el_nodes.SetAndObserveTransformNodeID(slicer.util.getNode('shift').GetID())
-        except Exception as e:
-            #print(e)
-            pass
-        #print("SHIFTED")
+        # try:
+        #     el_nodes = slicer.util.getNode("Electrodes")
+        #     el_nodes.SetAndObserveTransformNodeID(slicer.util.getNode('shift').GetID())
+        # except Exception as e:
+        #     pass
         # Compute the shift
 
         # self.logic.shift_estimation(self.left_e_rec, self.right_e_rec, self.pts_left, self.pts_right)
@@ -1245,9 +1398,7 @@ def compute_transformation_from_signal(records,
     m2 = np.reshape(mesh_pts, (-1, 1))
     m2 = m2.reshape(-1).tolist()
 
-    # #print(m2.shape, m2)
     pcas = transformer.transform([m2])
-    # #print()
     flat_list = [item for sublist in records.values() for item in sublist]
     x, _ = ElectrodeRecord.electrode_list_to_array(flat_list)
 
@@ -1345,13 +1496,13 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
             import torchio
         ScriptedLoadableModuleLogic.__init__(self)
 
-        self.net_shift = TransformerShiftPredictor(4, 64, 1, 1, 10)
-        cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
-        self.net_shift.load_state_dict(cd_state_dict)
+        #self.net_shift = TransformerShiftPredictor(4, 64, 1, 1, 10)
+        #cd_state_dict = torch.load(self.resourcePath('nets/net_transformer.pt'), map_location=torch.device('cpu'))
+        #self.net_shift.load_state_dict(cd_state_dict)
 
         self.mer_transforms = _read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
 
-        self.mer_classification_net = TransformerClassifier(4, 64, 1, 1)
+        self.mer_classification_net = TransformerClassifier(2, 64, 1, 1)
         cd_state_dict = torch.load(self.resourcePath('nets/transformer_classifier.pt'),
                                    map_location=torch.device('cpu'))
         self.mer_classification_net.load_state_dict(cd_state_dict)
@@ -1369,19 +1520,47 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
     def nrms_df_calculation(self, df: pd.DataFrame) -> pd.DataFrame:
 
+
+        df_cp = df.copy()
+
+        def compute_nrms(rms_values,mean_val):
+            # Compute 95th percentile of RMS values
+
+            rms_values = np.array(rms_values)
+
+            nrms_values = rms_values / mean_val
+            return nrms_values
+
         # iterate through columns
         cols = []
         for col in df.columns:
             if not col.endswith('XYZ') and col != 'RecordingSiteDTT':
                 cols.append(col)
 
-        # compute means
-        mean = df.iloc[1:5][cols].mean()
-        #print(mean)
-        # compute nrms
-        df[cols] = df[cols] / mean
 
-        return df
+        df_cp.index = df_cp['RecordingSiteDTT']
+
+
+
+        # compute means
+        #mean = df.iloc[1:5][cols].mean()
+        # compute nrms
+        for col in cols:
+            # compute mean of few first values with
+            subset = df_cp[col].loc[(df_cp.index >= 7)]
+
+            # Define weights: closer to index 10 -> higher weight
+            weights = ((subset.index - 7) / (10 - 7))  # ** 20  # Quadratic weights: closer to 10 = much larger
+
+            # print(weights)
+            # Calculate the weighted mean
+            weighted_mean = np.average(subset, weights=weights)
+
+            df_cp[col] = compute_nrms(df_cp[col].values, weighted_mean)
+            print("col", df_cp[col])
+        #df[cols] = compute_nrms(df[cols].values)
+
+        return df_cp
 
     def nrms_min_max_scale(self, df: pd.DataFrame):
         cols = []
@@ -1391,7 +1570,6 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
             # compute min max
         min_max = np.percentile(df[cols].values, 15), np.percentile(df[cols].values, 85)
-        #print(min_max)
         df.loc[:, cols] = (df.loc[:, cols] - min_max[0]) / (min_max[1] - min_max[0])
         df[cols] = df[cols].clip(0, 1)
         return df
@@ -1407,10 +1585,8 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         # compute means
         mean = df[cols].mean()
-        # #print("MEAN", mean)
         # set to  if  value > mean ans
         test = df.loc[0:4, cols].where(df.loc[0:4, cols] < mean, np.nan)
-        # #print(test)
         # compute mean
         mean_f = test.mean()
         # set to mean values if > mean (mean for each column)
@@ -1440,6 +1616,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
             [np.array([np.concatenate((row[0], [row[1]])) for row in df[[x + "XYZ", x]].values]) for x in cols])
 
         tensor = torch.from_numpy(result_np).type(torch.float32)
+        #print("Tensor shape: ", tensor)
         return tensor, cols, len(cols)
 
         # return tensor
@@ -1458,8 +1635,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         """
         # Apply the model to the electrode tensor
         mesh_tensor = torch.from_numpy(np.expand_dims(mesh_pca_pts, axis=0)).type(torch.float32)
-        # #print(mesh_tensor)
-        # #print(electrode_tensor)
+
         result = self.net_shift(electrode_tensor, mesh_tensor)
         return result
 
@@ -1469,7 +1645,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         """
         Get the absolute path to the module resource
         """
-        # #print("pt1", os.path.dirname(__file__))
+
         return os.path.normpath(os.path.join(os.path.dirname(__file__), "Resources", relativePath))
 
     def getParameterNode(self):
@@ -1533,10 +1709,8 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
             pts = pts * np.array([-1, 1, 1])
             pts = np.reshape(pts, (1, -1))[0]
 
-            #print(pts.shape)
-
-        res_pts = self.mer_transforms['pipe'].transform([pts])[0]
-        return res_pts, pts
+        #res_pts = self.mer_transforms['pipe'].transform([pts])[0]
+        return None, pts
 
     def classify_mers_clean(self, mer_data: torch.Tensor, number_of_electrodes: int):
         """
@@ -1552,32 +1726,43 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
                 classes[el_i * num_records + pos] = 0
 
         # filter wrong classes
-        for el_i in range(number_of_electrodes):
-
-            for pos_of_recording in range(1, num_records - 1):
-
-                # if class is 0 and previous and next is 1 then set to 1
-                if classes[el_i * num_records + pos_of_recording] == 0 and classes[
-                    el_i * num_records + pos_of_recording - 1] == 1 and classes[
-                    el_i * num_records + pos_of_recording + 1] == 1:
-                    classes[el_i * num_records + pos_of_recording][0] = 1
-                # if class is 1 and previous and next is 0 then set to 0
-                elif classes[el_i * num_records + pos_of_recording] == 1 and classes[
-                    el_i * num_records + pos_of_recording - 1] == 0 and classes[
-                    el_i * num_records + pos_of_recording + 1] == 0:
-                    classes[el_i * num_records + pos_of_recording][0] = 0
+        # for el_i in range(number_of_electrodes):
+        #
+        #     for pos_of_recording in range(1, num_records - 1):
+        #
+        #         # if class is 0 and previous and next is 1 then set to 1
+        #         if classes[el_i * num_records + pos_of_recording] == 0 and classes[
+        #             el_i * num_records + pos_of_recording - 1] == 1 and classes[
+        #             el_i * num_records + pos_of_recording + 1] == 1:
+        #             classes[el_i * num_records + pos_of_recording][0] = 1
+        #         # if class is 1 and previous and next is 0 then set to 0
+        #         elif classes[el_i * num_records + pos_of_recording] == 1 and classes[
+        #             el_i * num_records + pos_of_recording - 1] == 0 and classes[
+        #             el_i * num_records + pos_of_recording + 1] == 0:
+        #             classes[el_i * num_records + pos_of_recording][0] = 0
         return classes
 
-    def classify_mers(self, mer_data: torch.Tensor):
+    def classify_mers(self, mer_data: pd.DataFrame):
         """
-        clasify mers
+        classify mers
         """
+        md = mer_data.copy()
 
-        with torch.no_grad():
-            output = self.mer_classification_net(mer_data) > 0.5
-        return output
+        cols = [col for col in mer_data.columns if not col.endswith('XYZ') and col != 'RecordingSiteDTT']
+        print(mer_data[cols])
+        md.index = md['RecordingSiteDTT'] *-1
+        md['RecordingSiteDTT'] = md['RecordingSiteDTT'] * -1
+        res_classes = []
 
-    def _predict_shift(self, opt_input, lambda1=1.0, distance=0.2, optimiser=None):
+        for col in cols:
+            tmp = md[['RecordingSiteDTT', col]].values
+            #tmp = self.mer_transforms['pipe'].transform(md[['RecordingSiteDTT', col]])
+            md[col] = self.mer_classification_net(torch.Tensor(tmp)).round().detach().numpy()
+            res_classes+=md[col].values.tolist()
+        print(res_classes)
+        return torch.tensor(np.array(res_classes).reshape(len(res_classes),1)) >0
+
+    def _predict_shift(self, opt_input, lambda1=1.0, distance=0.2,max_shift=2, optimiser=None):
         """
         predict shift
         input:
@@ -1592,7 +1777,8 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         pass
 
     def predict_shift(self, text_node: "vtkMRMLTextNode", side: bool,
-                      to_mni: vtkMRMLLinearTransformNode, mesh: vtk.vtkPolyData, pcas, lambda1, distance,
+                      to_mni: vtkMRMLLinearTransformNode, mesh: vtk.vtkPolyData,
+                      pcas, lambda1, distance,max_shift = 2,scaling_range=(0.8,1.2),
                       optimiser = None):
         """
         Predicts the shift for electrode placement based on MER data and mesh.
@@ -1606,7 +1792,6 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         lambda1: Regularization parameter for the optimization.
         distance: Distance parameter for the optimization.
         learning_rate: Learning rate for the optimization.
-
         Returns:
         tuple: A tuple containing the converted transform, text node results, shift result, and text node with wrong labels.
         """
@@ -1618,30 +1803,33 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         df_text = self.nrms_df_calculation(df_text)
 
-        df_text = self.nrms_min_max_scale(df_text)
+        #df_text = self.nrms_min_max_scale(df_text)
+
 
         #print(df_text[[x for x in df_text.columns if not x.endswith('XYZ') and x != 'RecordingSiteDTT']])
 
         result_tensor, mapping_columns, num_of_elec = self.df_to_electrode_records_tensor(df_text,
                                                                                           to_mni_transform=to_mni,
-                                                                                          require_mirror=side)
+                                                                                   require_mirror=side)
         # note the result tensor is in mni scale and could be mirrored
         unscalled_tensor = result_tensor.clone()
 
-        result_tensor = self.electrode_records_rescale(result_tensor)
+        #result_tensor = self.electrode_records_rescale(result_tensor)
         #print(result_tensor.shape)
 
-        shift = self.predict_initial_shift(result_tensor, pcas)
+        #shift = self.predict_initial_shift(result_tensor, pcas)
 
-        shift = (shift * 20 - 10).detach()
+        #shift = (shift * 20 - 10).detach()
+        electrode_names = [x for x in df_text.columns if not x.endswith('XYZ') and x != 'RecordingSiteDTT']
+        electrode_names = sorted(electrode_names) # use one electrode names sorting for all cases
 
         # markup_node = convert_tensor_to_markup_node(unscalled_tensor, side)
-        classes = self.classify_mers_clean(unscalled_tensor, num_of_elec)
+        classes = self.classify_mers_clean(df_text, num_of_elec)
         #print("classes ", classes.numpy().reshape((num_of_elec,-1)).transpose())
         shift_result, classes, wrong_labels = self._predict_shift(
             OptimisationInput(mer_data=unscalled_tensor,
                               in_out=classes, shift=torch.Tensor([0.0,0.0,0.0]),
-                              scalling=torch.Tensor([1.0,1.0,1.0]), number_of_electrodes=num_of_elec, mesh=mesh),
+                              scaling=torch.Tensor([1.0]), number_of_electrodes=num_of_elec, mesh=mesh, max_shift=max_shift),
             lambda1, distance, optimiser = optimiser)
 
         # reshape wrong labels tensor to same shape as classes
@@ -1652,7 +1840,10 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         text_node_2 = compute_text(wrong_labels, df_text['RecordingSiteDTT'].values, mapping_columns)
 
         # logic.remove_previous_shift()
-        converted_transform = self.convert_to_slicer_transformation(shift_result.shift, [1,1,1], to_mni,
+
+        converted_transform = self.convert_to_slicer_transformation(shift_result.shift, [shift_result.scaling,
+                                                                                         shift_result.scaling,
+                                                                                         shift_result.scaling], to_mni,
                                                                     side)  # convert to slicer transformation
 
         return converted_transform, text_node_res, shift_result, text_node_2
@@ -1671,9 +1862,9 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         mesh_copy.DeepCopy(mesh)
         return mesh_copy
 
-        pass
 
-    def convert_to_slicer_transformation(self, shift, scalling, to_mni: vtkMRMLTransformNode, require_mirror):
+    def convert_to_slicer_transformation(self, shift, scaling,
+                                         to_mni: vtkMRMLTransformNode, require_mirror):
         """
         convert the shift to the slicer transformation from Native to Native
         """
@@ -1690,9 +1881,9 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         # result shift     (to_mni^-1)*transl*to_mni
 
         shift_mat = np.eye(4)
-        shift_mat[0, 0] = scalling[0]
-        shift_mat[1, 1] = scalling[1]
-        shift_mat[2, 2] = scalling[2]
+        shift_mat[0, 0] = scaling[0]
+        shift_mat[1, 1] = scaling[1]
+        shift_mat[2, 2] = scaling[2]
 
         shift_mat2 = np.eye(4)
         shift_mat2[:3, 3] = (-shift)
@@ -1786,12 +1977,7 @@ class DBSShiftPredictionTest(ScriptedLoadableModuleTest):
         left_markups.AddControlPointWorld(82.27, 76.58, 4.95)
         left_markups.AddControlPointWorld(4.95, 42.64, -1.34)
         left_markups.SetName("left")
-        # load MER files
-        # self.left_e_rec, self.right_e_rec = self.logic.process_mer_data(left_markups,
-        #                                                                 right_markups,
-        #                                                                 slicer.util.getNode('to_mni'),
-        #                                                                 r"/home/varga/mounted_tuplak/mer_data_processing/mer/sub-P060/ses-perisurg/ieeg/sub-P060_ses-perisurg_run-01_channels.tsv",
-        #                                                                 r"/home/varga/mounted_tuplak/mer_data_processing/mer/sub-P060/ses-perisurg/ieeg/sub-P060_ses-perisurg_run-01_channels.tsv")
+
 
     def test_DBSShiftPrediction1(self):
         """ Ideally you should have several levels of tests.  At the lowest level
