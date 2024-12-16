@@ -1011,13 +1011,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         _remove_previous_node("LeadOR: Classes")
         _remove_previous_node("LeadOR: Wrong Labels")
         # compute shift transformation
-        #try multiple runs if fails
-        params = \
-            [ [90,0.5]#,
-              # [1,0.5],
-              # [1,0.2]
 
-                   ]
         result_transforms = {}
         mark = False
         bds = {'bounds': [(-self.max_shift, self.max_shift),
@@ -1025,25 +1019,14 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                           (-self.max_shift, self.max_shift),
                           self.scaling_range]}
 
-        for param in params:
 
-            res_transform, text_node,shift_result, wrong_labels= self.logic.predict_shift(node, self.side,
+
+        res_transform, text_node,shift_result, wrong_labels= self.logic.predict_shift(node, self.side,
                                                                                           self.to_mni,
                                                                                           self.mesh_copy, self.pcas,
                                                                                           max_shift=self.max_shift,
-                                                                lambda1=param[0], distance=param[1], optimiser=BrutePowell(bds))
+                                                                lambda1=90, distance=0.5, optimiser=BrutePowell(bds))
 
-            if shift_result.cor_recs_a_shift < 10:
-                mark = True
-                break
-            if shift_result.cor_recs_a_shift in params:
-                pass
-            else:
-                result_transforms[shift_result.cor_recs_a_shift] = [res_transform, text_node]
-        print("res_transform!!!",res_transform)
-        if not mark:
-            num_elecs = min(result_transforms.keys())
-            res_transform, text_node = result_transforms[num_elecs]
         print(shift_result)
         # create text node
         text_node.SetName("LeadOR: Classes")
