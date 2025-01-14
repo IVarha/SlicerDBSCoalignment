@@ -49,11 +49,10 @@
 
 // ************* Interpolation and Resampling ****************
 
-(BSplineInterpolationOrder 1)
-(FinalBSplineInterpolationOrder 3)
-
 (DefaultPixelValue 0)
 (WriteResultImage "true")
+(BSplineInterpolationOrder 1)
+(FinalBSplineInterpolationOrder 3)
 
 (ResultImagePixelType "short")
 (ResultImageFormat "nii.gz")

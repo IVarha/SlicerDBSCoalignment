@@ -46,7 +46,6 @@
 
 // ************* Interpolation and Resampling ****************
 
-(BSplineInterpolationOrder 1)
 (FinalBSplineInterpolationOrder 3)
 (ITKTransformOutputFileNameExtension "tfm")
 

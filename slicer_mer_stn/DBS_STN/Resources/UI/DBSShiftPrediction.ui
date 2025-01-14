@@ -18,35 +18,13 @@
      </property>
      <layout class="QFormLayout" name="formLayout_2">
       <item row="0" column="0">
-       <widget class="QLabel" name="label_6">
-        <property name="text">
-         <string>Transformation To MNI</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="qMRMLNodeComboBox" name="transform_inputSelector">
-        <property name="toolTip">
-         <string>Pick the input to the algorithm.</string>
-        </property>
-        <property name="nodeTypes">
-         <stringlist notr="true">
-          <string>vtkMRMLTransformNode</string>
-         </stringlist>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>inputVolume</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
        <widget class="QLabel" name="label_7">
         <property name="text">
          <string>Feature Text File</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
+      <item row="0" column="1">
        <widget class="qMRMLNodeComboBox" name="textinputSelector">
         <property name="toolTip">
          <string>Pick the input to the algorithm.</string>
@@ -61,14 +39,14 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0">
+      <item row="1" column="0">
        <widget class="QLabel" name="label_7">
         <property name="text">
          <string>STN Segmentation</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
+      <item row="1" column="1">
        <widget class="qMRMLNodeComboBox" name="stn_inputSelector">
         <property name="toolTip">
          <string>Pick the input to the algorithm.</string>
@@ -83,14 +61,14 @@
         </property>
        </widget>
       </item>
-      <item row="3" column="0">
+      <item row="2" column="0">
        <widget class="QLabel" name="toggleLabel">
         <property name="text">
          <string>Shift Mesh or Electrodes</string>
         </property>
        </widget>
       </item>
-      <item row="3" column="1">
+      <item row="2" column="1">
        <widget class="QCheckBox" name="meshOrElectrodesToggle">
         <property name="toolTip">
          <string>Check to shift mesh, uncheck to shift electrodes.</string>
@@ -100,14 +78,14 @@
         </property>
        </widget>
       </item>
-      <item row="4" column="0">
+      <item row="3" column="0">
        <widget class="QLabel" name="weightLabel">
         <property name="text">
          <string>Max Shift (MNI)</string>
         </property>
        </widget>
       </item>
-      <item row="4" column="1">
+      <item row="3" column="1">
        <widget class="QDoubleSpinBox" name="weightSpinBox">
         <property name="minimum">
          <double>0.000000000000000</double>
@@ -123,14 +101,14 @@
         </property>
        </widget>
       </item>
-      <item row="5" column="0">
+      <item row="4" column="0">
        <widget class="QLabel" name="rangeLabel">
         <property name="text">
          <string>Scaling Range</string>
         </property>
        </widget>
       </item>
-      <item row="5" column="1">
+      <item row="4" column="1">
        <widget class="ctkRangeWidget" name="scallingRangeWidget">
         <property name="singleStep">
          <double>0.100000000000000</double>
@@ -162,7 +140,6 @@
      </layout>
     </widget>
    </item>
-
    <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
@@ -208,22 +185,6 @@
    <sender>DBSShiftPrediction</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>textinputSelector</receiver>
-   <slot>setMRMLScene(vtkMRMLScene*)</slot>
-   <hints>
-    <hint type="sourcelabel">
-     <x>20</x>
-     <y>20</y>
-    </hint>
-    <hint type="destinationlabel">
-     <x>20</x>
-     <y>20</y>
-    </hint>
-   </hints>
-  </connection>
-  <connection>
-   <sender>DBSShiftPrediction</sender>
-   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
-   <receiver>transform_inputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
    <hints>
     <hint type="sourcelabel">

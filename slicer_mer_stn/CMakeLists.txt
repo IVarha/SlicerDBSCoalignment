@@ -29,6 +29,7 @@ add_subdirectory(TextToMarkups)
 add_subdirectory(ShiftCLI)
 add_subdirectory(ShiftCLI)
 add_subdirectory(AtlasMapping)
+add_subdirectory(DBS_Settings)
 ## NEXT_MODULE
 
 #-----------------------------------------------------------------------------
