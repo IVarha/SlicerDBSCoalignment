@@ -1,6 +1,8 @@
 import logging
-import slicer
+
 import scipy.optimize as optimize
+import slicer
+
 try:
     import pandas as pd
 except ImportError:
@@ -9,16 +11,12 @@ except ImportError:
 
 import os
 import pickle
-import shutil
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
-from typing import Annotated, Optional, Tuple, List, Union
+from typing import Optional, Tuple, List, Union
 
 from torch import nn
 from torch.nn import functional as F
-from scipy.optimize import minimize
 
 try:
     import fsl.data.image as fim
@@ -47,7 +45,7 @@ except ImportError:
     slicer.util.pip_install('intensity-normalization')
     import intensity_normalization as inorm
 
-from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLModelNode, vtkMRMLTransformNode, vtkMRMLTextNode, \
+from MRMLCorePython import vtkMRMLModelNode, vtkMRMLTransformNode, vtkMRMLTextNode, \
     vtkMRMLSubjectHierarchyNode, vtkMRMLLinearTransformNode
 
 try:
@@ -55,7 +53,7 @@ try:
 except ImportError:
     slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\dbs_pure_lib')
     from dbs_image_utils.mask import SubcorticalMask
-from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerClassifier
+from dbs_image_utils.nets import TransformerClassifier
 try:
 
     from mer_lib.data import MER_data
@@ -66,13 +64,12 @@ from slicer import vtkMRMLScalarVolumeNode
 from slicer.ScriptedLoadableModule import *
 from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
-    WithinRange,
 )
 from slicer.util import VTKObservationMixin
 
 from Lib import slicer_preprocessing
-from Lib.mer_support import EntryTarget, Point, cross_generation_mni, ElectrodeRecord, \
-    clasify_mers, extract_points_from_mesh
+from Lib.mer_support import cross_generation_mni, ElectrodeRecord, \
+    extract_points_from_mesh
 
 import dataclasses
 
@@ -655,15 +652,17 @@ class Brute(OptimisationMethod):
     def __init__(self, settings):
         super().__init__(settings)
         bounds = settings['bounds']
-
-
-        n_s = 7
+        if 'number_steps' in settings:
+            n_s = settings['number_steps']
+        else:
+            n_s = 7
         ds = [((bounds[i][1] - bounds[i][0])/ ( n_s -1)) for i in range(len(bounds))]
+        self.steps = ds
         self.ranges = [slice(bounds[0][0], bounds[0][1], ds[0]),
                        slice(bounds[1][0], bounds[1][1], ds[1]),
                        slice(bounds[2][0], bounds[2][1], ds[2]),
                        slice(bounds[3][0], bounds[3][1], ds[3])]
-
+        print(self.ranges)
         #self.ranges = [slice(-2, 2, 0.5), slice(-2, 2, 0.5), slice(-2, 2, 0.5), slice(0.8, 1.2, 0.1)]
 
     def __call__(self, function):
@@ -685,6 +684,13 @@ class BrutePowell(OptimisationMethod):
             super().__init__(settings)
             bounds = settings['bounds']
 
+            self.bounds = bounds
+
+            self.inside_levels = 3
+
+
+
+
             br = Brute({'bounds': bounds})
             self.br = br
             self.pb = PowellWithBounds({'bounds': bounds})
@@ -692,6 +698,23 @@ class BrutePowell(OptimisationMethod):
 
         def __call__(self, function):
             res = self.br(function)
+            brute = self.br
+
+            print("origin shift after brute", res['x'], 'fun', res['fun'])
+
+            for _ in range(1,self.inside_levels):
+
+                steps = np.array(brute.steps) / 2
+                start_point = res['x']
+                new_bounds =  [ (start_point[i] - steps[i], start_point[i] + steps[i]) for i in range(len(start_point))]
+
+                brute = Brute({'bounds': new_bounds,'number_steps': 4})
+
+                res = brute(function)
+                print("res_",_, res['x'], 'fun', res['fun'])
+
+
+
             init = res['x']
             print("init", init)
             self.pb.initial_guess = init
