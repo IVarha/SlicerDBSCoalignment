@@ -701,14 +701,17 @@ class BrutePowell(OptimisationMethod):
             brute = self.br
 
             print("origin shift after brute", res['x'], 'fun', res['fun'])
+            print("origin steps", brute.steps)
 
             for _ in range(1,self.inside_levels):
 
                 steps = np.array(brute.steps) / 2
+                print('new steps', steps)
                 start_point = res['x']
-                new_bounds =  [ (start_point[i] - steps[i], start_point[i] + steps[i]) for i in range(len(start_point))]
-
-                brute = Brute({'bounds': new_bounds,'number_steps': 4})
+                new_bounds =  [ (((start_point[i] - steps[i]) if (start_point[i] - steps[i]) > self.bounds[i][0] else self.bounds[i][0]),
+                                ((start_point[i] + steps[i]) if (start_point[i] + steps[i]) < self.bounds[i][1] else self.bounds[i][1]))  for i in range(len(start_point))]
+                print('new bds',new_bounds)
+                brute = Brute({'bounds': new_bounds,'number_steps': 5})
 
                 res = brute(function)
                 print("res_",_, res['x'], 'fun', res['fun'])
@@ -719,7 +722,7 @@ class BrutePowell(OptimisationMethod):
             print("init", init)
             self.pb.initial_guess = init
             res = self.pb(function)
-            print("res", res['x'])
+            print("final result ", res['x'], 'fun', res['fun'])
             return res
 
 
