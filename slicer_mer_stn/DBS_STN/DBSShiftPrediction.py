@@ -304,8 +304,46 @@ class OptimisationInput:
         self.electrode_direction = (orig_points[1] - orig_points[0]).detach().numpy()
 
 
+def get_mesh_center(mesh):
+    """
+    Get the bounds of a VTK mesh.
 
-        # resca
+    Args:
+        mesh (vtk.vtkPolyData): The VTK mesh.
+
+    Returns:
+        Tuple[float, float, float, float, float, float]: The bounds of the mesh.
+    """
+    bounds = mesh.GetBounds()
+
+    center = [(bounds[0] + bounds[1]) / 2, (bounds[2] + bounds[3]) / 2, (bounds[4] + bounds[5]) / 2]
+    return center
+
+def compute_scaling_transform(mesh, scaling_vector):
+    # Get the centre of the mesh
+    center = get_mesh_center(mesh)  # Ensure get_mesh_center returns a 3-element iterable
+
+    # Compute the transformation matrices
+    decent_matrix = np.eye(4)
+    decent_matrix[:3, 3] = -np.array(center)
+
+    scaling_matrix = np.eye(4)
+    scaling_matrix[0, 0] = scaling_vector[0]
+    scaling_matrix[1, 1] = scaling_vector[1]
+    scaling_matrix[2, 2] = scaling_vector[2]
+
+    # Combine transformations
+    res_matrix = np.linalg.inv(decent_matrix) @ scaling_matrix @ decent_matrix
+
+    # Convert NumPy matrix to VTK matrix
+    vtk_matrix = vtk.vtkMatrix4x4()
+    for i in range(4):
+        for j in range(4):
+            vtk_matrix.SetElement(i, j, res_matrix[i, j])
+    # Create VTK transform
+    vtk_transform = vtk.vtkTransform()
+    vtk_transform.SetMatrix(vtk_matrix)
+    return vtk_transform
 
 
 def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPolyData,
@@ -326,7 +364,7 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
 
     if not isinstance(shift, torch.Tensor):
         shift = torch.tensor(shift, dtype=torch.float32)
-        scalling = torch.tensor(scalling, dtype=torch.float32)
+        scaling = torch.tensor(scalling, dtype=torch.float32)
     energies = orig_points[:, 4]
     #print("energies",energies)
     orig_points = orig_points[:, :3]
@@ -338,9 +376,21 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
     if isinstance(orig_points, np.ndarray):
         orig_points = torch.from_numpy(orig_points)
     # #print(orig_points)
-    new_points = (orig_points - central_pt)*scalling - shift + central_pt
+    #new_points = (orig_points - central_pt)*scalling - shift + central_pt
+    new_points = orig_points - shift
 
-    points_inside_posttrans = check_points_inside_vtk_mesh(mesh, new_points.detach().numpy())
+    mesh_transform = compute_scaling_transform(mesh, [scalling, scalling, scalling])
+    transform_filter = vtk.vtkTransformPolyDataFilter()
+    transform_filter.SetTransform(mesh_transform)
+    transform_filter.SetInputData(mesh)
+    transform_filter.Update()
+
+    # Get the transformed mesh
+    transformed_mesh = transform_filter.GetOutput()
+
+    # Now you can extract transformed points
+
+    points_inside_posttrans = check_points_inside_vtk_mesh(transformed_mesh, new_points.detach().numpy())
     #inside_weights = energies * (points_inside_posttrans)  # High-energy points inside
     #outside_weights =( energies) * (~points_inside_posttrans)  # High-energy points outside
     weight = generate_correctly_placed_bitmap(in_out, points_inside_posttrans)
@@ -351,7 +401,7 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
         #print("Wrongly marked points: ", str((weight > 0).sum()))
          #print(f'    {(weight>0).sum():.2f}')
 
-    mp = extract_points_from_mesh(mesh)
+    mp = extract_points_from_mesh(transformed_mesh)
     # #print ("mesh pt 0", mp[:3])
     mesh_pts = np.reshape(mp, (len(mp) // 3, 3))
 
@@ -409,7 +459,7 @@ def optimise_mer_signal(opt_input : OptimisationInput,
              lambda1* optimisation_criterion(mer_data, opt_input.in_out,
                                              shift=x1[:3],# + d * x[3],
                                              scalling=x1[3], mesh=opt_input.mesh, verbose=verbose)
-            +  (np.linalg.norm(x1[:3]))#+ d * x[3]
+            #+  (np.linalg.norm(x1[:3]))#+ d * x[3]
                               #)) # penalize the shift
             #+ distance*(np.linalg.norm(y - 1)) # penalize the scalling to be close to 1
             #+ (0 if x[3] < 1.5 else 1000) # penalize the scalling > 1
@@ -937,6 +987,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)  # needed for parameter node observation
+        self.mesh_node = None
         self.mer_classification_net = None
         self.processing_folder = None
         self.mesh1 = None
@@ -1047,7 +1098,10 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         _remove_previous_node("LeadOR: Classes")
         _remove_previous_node("LeadOR: Wrong Labels")
+
+
         # compute shift transformation
+
 
         result_transforms = {}
         mark = False
@@ -1067,7 +1121,8 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         print(shift_result)
         # create text node
         text_node.SetName("LeadOR: Classes")
-        slicer.mrmlScene.AddNode(res_transform)
+        slicer.mrmlScene.AddNode(res_transform[0])
+        slicer.mrmlScene.AddNode(res_transform[1])
         slicer.mrmlScene.AddNode(text_node)
 
         wrong_labels.SetName("LeadOR: Wrong Labels")
@@ -1087,32 +1142,13 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     
     def onInputMeshSelected(self, node: vtkMRMLModelNode):
 
+        self.mesh_node = node
         mesh_copy = self.logic.create_mesh_copy(node)
             # apply transformation to vtk
         #mesh_copy = self.apply_transformation_to_polydata(self.to_mni, mesh_copy) # mesh in mni space
         self.mesh1 = node.GetPolyData()
         print("SELECTED MESH", self.mesh1)
 
-
-        # get cells bounds from node
-
-        # check if the mesh is on the right or left side
-        #self.side = check_side(bds)
-
-
-
-        # get pcas from the mesh
-        #self.pcas, mesh_points = self.logic.get_pcas_from_mesh(self.mesh1, self.side)
-
-        # mesh_points = extract_points_from_mesh(self.mesh1)
-        # # create mesh copy
-        # #mesh_copy = self.logic.create_mesh_copy(node)
-        # # change points of the mesh
-        # if self.side:
-        #     mesh_points = np.reshape(mesh_points, (-1, 3))
-        #     mesh_copy = change_mesh(mesh_copy, mesh_points)
-        # self.mesh_copy = mesh_copy
-        #
         self.mesh_selected = True
 
 
@@ -1366,6 +1402,9 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         try:
             a = slicer.util.getNode('shift')
             slicer.mrmlScene.RemoveNode(a)
+
+            a = slicer.util.getNode('scale_mesh')
+            slicer.mrmlScene.RemoveNode(a)
             return
         except:
             pass
@@ -1384,6 +1423,9 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
                 par_transf = dtt_node.GetParentTransformNode()
                 print("par_transf",par_transf is not None)
                 self.apply_transformation_to_node(slicer.util.getNode('shift'),par_transf)
+                # apply transformation to mesh
+                self.mesh_node.SetAndObserveTransformNodeID(slicer.util.getNode('scale_mesh').GetID())
+
         except:
             pass
         # try:
@@ -1954,7 +1996,8 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         # logic.remove_previous_shift()
 
-        converted_transform = self.convert_to_slicer_transformation(shift_result)  # convert to slicer transformation
+        converted_transform = self.convert_to_slicer_transformation(shift_result,
+                                                                    get_mesh_center(mesh))  # convert to slicer transformation
 
         return converted_transform, text_node_res, shift_result, text_node_2
 
@@ -1973,7 +2016,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         return mesh_copy
 
 
-    def convert_to_slicer_transformation(self, shift_result: ShiftResult):
+    def convert_to_slicer_transformation(self, shift_result: ShiftResult, mesh_center):
         """
         convert the shift to the slicer transformation from Native to Native
         """
@@ -1990,17 +2033,26 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
         # result shift     (to_mni^-1)*transl*to_mni
 
+        decenter_mat = np.eye(4)
+        decenter_mat[:3, 3] = -np.array(mesh_center)
+
+
         scale_mat = np.eye(4)
         scale_mat[0, 0] = shift_result.scaling
         scale_mat[1, 1] = shift_result.scaling
         scale_mat[2, 2] = shift_result.scaling
 
+
+        scale_mesh_mat = np.linalg.inv(decenter_mat) @ scale_mat @ decenter_mat
+
+
+
+
+
         shift_mat = np.eye(4)
         shift_mat[:3, 3] = (-shift_result.shift)
 
-        result_transform = np.dot(scale_mat, pT)
-        result_transform = np.dot(shift_mat,result_transform)
-        result_transform = np.dot(p,result_transform)
+        result_transform = shift_mat
         # p  *shiftmat*scalemat* pt
         print("result_transform matrix", result_transform)
 
@@ -2008,7 +2060,11 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
         transformNode.SetName("shift")
         transformNode.SetMatrixTransformToParent(convert_to_vtk_matrix(result_transform))
 
-        return transformNode
+        transform_mesh_mat = vtkMRMLLinearTransformNode()
+        transform_mesh_mat.SetName("scale_mesh")
+        transform_mesh_mat.SetMatrixTransformToParent(convert_to_vtk_matrix(scale_mesh_mat))
+
+        return transformNode, transform_mesh_mat
         pass
 
     def remove_previous_shift(self):
