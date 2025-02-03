@@ -145,6 +145,32 @@ def get_control_points(markups_node):
         points.append(markups_node.GetNthControlPointPositionWorld(i))
     return points
 
+def clone_mesh_node( mesh_node, new_name):
+    """
+    Clones a mesh node.
+
+    Args:
+        mesh_node: The mesh node to clone.
+        new_name: The name of the new mesh node.
+
+    Returns:
+        The cloned mesh node.
+    """
+    # Get the original node
+    original_node = mesh_node
+
+    # Create a new model node
+    copied_node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode', new_name)
+
+    # Deep copy the polydata (ensuring independence)
+    new_poly_data = vtk.vtkPolyData()
+    new_poly_data.DeepCopy(original_node.GetPolyData())
+
+    # Set the copied data to the new node
+    copied_node.SetAndObservePolyData(new_poly_data)
+
+    return copied_node
+
 
 def get_transform_matrix(transform_node):
     """
@@ -1143,7 +1169,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
     def onInputMeshSelected(self, node: vtkMRMLModelNode):
 
         self.mesh_node = node
-        mesh_copy = self.logic.create_mesh_copy(node)
+        #mesh_copy = self.logic.create_mesh_copy(node)
             # apply transformation to vtk
         #mesh_copy = self.apply_transformation_to_polydata(self.to_mni, mesh_copy) # mesh in mni space
         self.mesh1 = node.GetPolyData()
@@ -1400,11 +1426,15 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
     def on_calculate_shift(self):
         try:
+
             a = slicer.util.getNode('shift')
             slicer.mrmlScene.RemoveNode(a)
 
             a = slicer.util.getNode('scale_mesh')
             slicer.mrmlScene.RemoveNode(a)
+            if self.shift_mesh:
+                a = slicer.util.getNode('STN Coaligned')
+                slicer.mrmlScene.RemoveNode(a)
             return
         except:
             pass
@@ -1415,16 +1445,35 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # self.copy_leador_electrodes()
         try:
             print("try to apply transformation", self.shift_mesh)
+            scale_transform = slicer.util.getNode("scale_mesh")
+            shift_transform = slicer.util.getNode("shift")
             if self.shift_mesh:
+                pass
+                # invert the shift
+                # copy the mesh node
 
-                self.apply_transformation_to_node(slicer.util.getNode('shift'), self.mesh1)
+                # Duplicate the node
+                _ = clone_mesh_node(self.mesh_node,'STN Coaligned')
+                copied_node = slicer.util.getNode('STN Coaligned')
+
+                copied_display_node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelDisplayNode')
+                copied_node.SetAndObserveDisplayNodeID(copied_display_node.GetID())
+                # Set new color (RGB: Red, Green, Blue, values between 0-1)
+                copied_display_node.SetColor(0.5, 0.0, 0.5)  # Purple
+                copied_display_node.SetRepresentation(1)  # 0 = Points, 1 = Wireframe, 2 = Surface
+                copied_display_node.SetLineWidth(2)  # Increase wireframe visibility
+                # Apply transformations correctly
+                shift_transform.Inverse()
+                scale_transform.SetAndObserveTransformNodeID(shift_transform.GetID())
+                copied_node.SetAndObserveTransformNodeID(scale_transform.GetID())
+
             else:
                 dtt_node = slicer.util.getNode("LeadOR:DTT")
                 par_transf = dtt_node.GetParentTransformNode()
                 print("par_transf",par_transf is not None)
-                self.apply_transformation_to_node(slicer.util.getNode('shift'),par_transf)
+                self.apply_transformation_to_node(shift_transform,par_transf)
                 # apply transformation to mesh
-                self.mesh_node.SetAndObserveTransformNodeID(slicer.util.getNode('scale_mesh').GetID())
+                self.mesh_node.SetAndObserveTransformNodeID(scale_transform.GetID())
 
         except:
             pass
