@@ -474,6 +474,5 @@ def clasify_mers(mer_data: Dict[str, List[ElectrodeRecord]], model):
         i += v
     return res_el_record
 
-    return output
 
 

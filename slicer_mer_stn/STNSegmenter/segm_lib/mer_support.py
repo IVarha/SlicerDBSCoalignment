@@ -4,7 +4,6 @@ from typing import Optional, List, Iterable, Dict
 import numpy as np
 import torch
 import vtk
-from mer_lib.data import MER_data
 
 
 @dataclass
@@ -238,48 +237,6 @@ class ElectrodeRecord:
              #print( result[0][i], result[1][i])
         return result
 
-    @staticmethod
-    def extract_electrode_records_from_array(array : ElectrodeArray,
-                                             mer_data: MER_data,
-                                             transformation: Optional[np.ndarray]) -> Dict[str,List["ElectrodeRecord"]] :
-        """
-        Extracts electrode records from an array based on MER data and a transformation matrix.
-
-        Args:
-            array (ElectrodeArray): The electrode array.
-            mer_data (MER_data): The MER data.
-            transformation (Optional[np.ndarray]): The transformation matrix. Defaults to None.
-
-        Returns:
-            List[ElectrodeRecord]: The extracted electrode records.
-        """
-        if transformation is None:
-            transformation = np.eye(4)
-
-        result = {}
-        dists = mer_data.get_anat_landmarks()[1]
-
-        for i_distance in range((mer_data.extracted_features.shape[1])):
-            for el_indx in range(mer_data.get_num_electrodes()):
-                el_name = mer_data.get_electrode_name_by_index(el_indx)
-                if el_name not in result:
-                    result[el_name] = []
-
-                ent_targ : EntryTarget = getattr(array,el_name)
-                vector= ent_targ.target - ent_targ.entry
-
-                norm = vector / np.linalg.norm(vector.to_array())
-
-
-                res_pt = ent_targ.target + dists[i_distance] * norm
-                res_pt.apply_transformation(transformation)
-
-                er = ElectrodeRecord(res_pt,
-                                     record=mer_data.extracted_features[el_indx][i_distance],
-                                     label=0)
-                result[el_name].append(er)
-                #result.append(er)
-        return result
 
 def check_points_inside_vtk_mesh(mesh, points):
     """
@@ -391,86 +348,6 @@ def extract_points_from_mesh(mesh):
 
     # Return the list of points
     return points_list
-def optimisation_criterion(orig_points, in_out, shift, mesh: vtk.vtkPolyData):
-    """
-    Calculate the criterion value for a given set of original points, in_out values, shift vector, and mesh.
-
-    Args:
-        orig_points (torch.Tensor): The original points.
-        in_out (torch.Tensor): The in_out values.
-        shift (torch.Tensor): The shift vector.
-        mesh (cMesh): The mesh object.
-
-    Returns:
-        torch.Tensor: The criterion value.
-    """
-
-    orig_points = orig_points[:, :3]
-    if isinstance(orig_points, np.ndarray):
-        orig_points = torch.from_numpy(orig_points)
-    # print(orig_points)
-    new_points = orig_points - shift
-    #    if isinstance(orig_points,np.ndarray):
-    #        points_inside_posttrans = mesh.is_points_inside(new_points.tolist())
-    #    else:
-    points_inside_posttrans = check_points_inside_vtk_mesh(mesh,new_points.detach().numpy())
-
-    weight = generate_correctly_placed_bitmap(in_out, points_inside_posttrans)
-    # print(f'    {(weight>0).sum():.2f}')
-
-    mp = extract_points_from_mesh(mesh)
-    # print ("mesh pt 0", mp[:3])
-    mesh_pts = np.reshape(mp,(len(mp) // 3, 3))
-
-    mesh_pts = torch.from_numpy(mesh_pts)
-    # print(torch.abs(distances_to_mesh(new_points,mesh_pts)))
-
-    result_error = (weight * torch.abs(distances_to_mesh(new_points, mesh_pts))).sum()
-    if (weight > 0).sum() == 0:
-        result_error = 0
-    else:
-        result_error = result_error / (weight > 0).sum()
-
-    result_error = result_error + ((weight > 0).sum()) * 0.1
-
-    return result_error
 
 
-
-def clasify_mers(mer_data : Dict[str , List[ElectrodeRecord]],model):
-    """
-    clasify mers
-    """
-
-    tmp = {}
-    tmp_vector = []
-    for k,v in mer_data.items():
-        #print(k)
-        tmp[k] = len(v)
-        tmp_vector +=v
-    record,target = ElectrodeRecord.electrode_list_to_array(tmp_vector)
-
-
-
-    record = torch.from_numpy(record).float()
-    target = torch.from_numpy(target).float()
-    with torch.no_grad():
-        output = model(record)
-
-    # convert back electrode records
-    output = output.numpy()
-    i = 0
-    res_el_record = {}
-    for k,v in tmp.items():
-        electrode_output = output[i:i+v] > 0.5
-        res_el_record[k] = []
-        for j in range(v):
-            tmp_vector[i+j].label = electrode_output[j]
-            res_el_record[k].append(tmp_vector[i+j])
-
-        i += v
-    return res_el_record
-
-
-    return output
 

@@ -1,21 +1,18 @@
-import logging
-import os
 import shlex
-from typing import Annotated, Optional
 import logging
-import slicer
-
 import os
 import pickle
-import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated, Optional, Tuple
 
+import slicer
 from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLTransformNode, vtkMRMLModelNode, \
     vtkMRMLModelDisplayNode
+
 try:
     from segm_lib import slicer_preprocessing
     from segm_lib.image_utils import SlicerImage
@@ -35,14 +32,13 @@ except ImportError:
 
     #slicer.util.pip_install('dbs-image-utils')
     from dbs_image_utils.mask import SubcorticalMask
-from dbs_image_utils.nets import CenterDetector, CenterAndPCANet, TransformerShiftPredictor, TransformerClassifier
+from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
 
 try:
     import fsl.data.image as fim
 except ImportError:
     slicer.util.pip_install('fslpy')
     import fsl.data.image as fim
-import fsl.transform.flirt as fl
 
 try:
     import mer_lib.artefact_detection as ad
@@ -62,11 +58,8 @@ if sys.platform == 'win32':
         slicer.util.pip_install('keras==2.10.0')
         slicer.util.pip_install('antspyx')
 
-import mer_lib.feature_extraction as fe
-import mer_lib.processor as proc
 import numpy as np
 import qt
-import vtk
 
 try:
     import torch
@@ -128,6 +121,9 @@ def _compute_min_max_scaler(pt_min, pt_max):
     a = MinMaxScaler()
     a.fit([pt_min, pt_max])
     return a
+
+
+
 
 
 class STNSegmenter(ScriptedLoadableModule):
@@ -219,14 +215,15 @@ class STNSegmenterParameterNode:
     """
     The parameters needed by module.
 
-    inputVolume - The volume to threshold.
+    structuralVolume - The volume to threshold.
     imageThreshold - The value at which to threshold the input volume.
     invertThreshold - If true, will invert the threshold.
     thresholdedVolume - The output volume that will contain the thresholded volume.
     invertedVolume - The output volume that will contain the inverted thresholded volume.
     """
 
-    inputVolume: vtkMRMLScalarVolumeNode
+    structuralVolume: vtkMRMLScalarVolumeNode
+    t2Volume: vtkMRMLScalarVolumeNode
     imageThreshold: Annotated[float, WithinRange(-100, 500)] = 100
     invertThreshold: bool = False
     thresholdedVolume: vtkMRMLScalarVolumeNode
@@ -300,6 +297,8 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.twoStepCoregistrationButton.clicked.connect(self.onTwoStepCoregistration)
         self.ui.segmentationButton.clicked.connect(self.onSegmentationButtonClicked)
 
+        self.ui.twoStepCoregistrationDropdown.currentTextChanged.connect(self.onMNIRegistrationMethodChanged)
+
         self.ui.t2inputSelector.currentNodeChanged.connect(lambda x: self.onVolumeSelect(x, "t2_node"))
         self.ui.inputSelector.currentNodeChanged.connect(lambda x: self.onVolumeSelect(x, "t1_node"))
         self.t1_node = None
@@ -307,6 +306,14 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
+
+    def onMNIRegistrationMethodChanged(self, method: str):
+        """
+        Update the selected registration method when the dropdown value changes.
+        """
+        self.selectedMNIRegistrationMethod = method
+        print(f"Selected registration method: {self.selectedMNIRegistrationMethod}")
+
 
     def onVolumeSelect(self, x: vtkMRMLScalarVolumeNode, name):
         # get storage node of x
@@ -355,9 +362,15 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyWMSeg(self) -> None:
         print("start on onApplyWMSeg")
+        if sys.platform == 'win32':
+            slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
+                                                 out_folder=self.temp_workdir.name)
+        else:
+            import DBS_Settings
+            pyth = DBS_Settings.PythonExeDBSPath().getValue()
+            slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
+                                                 out_folder=self.temp_workdir.name, pyth=pyth)
 
-        slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
-                                             out_folder=self.temp_workdir.name)
         self.wm_seg_done = True
         print("fin on appl")
 
@@ -365,7 +378,8 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         print("test onApplyIntensity")
         # slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
         if self.wm_seg_done:
-            self.logic.intensity_normalisation(self.temp_workdir.name)
+            print(check_storage_node(self.t2_node, self.temp_workdir).GetFileName())
+            self.logic.intensity_normalisation(self.temp_workdir.name,t2_file_name= check_storage_node(self.t2_node, self.temp_workdir).GetFileName())
             self.intensity_normalisation_done = True
             t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t2_normalised.nii.gz"))
             self.ui.t2inputSelector.currentNodeChanged(t2_node)
@@ -374,9 +388,9 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.popup_window()
 
     def onTwoStepCoregistration(self):
-        print("test onTwoStepCoregustration")
+        print("test onTwoStepCoregustration " + self.selectedMNIRegistrationMethod )
 
-        self.transform_node = self.logic.two_step_coregistration(self.t2_node, self.temp_workdir.name)
+        self.transform_node = self.logic.two_step_coregistration(self.t2_node, self.temp_workdir.name,method=self.selectedMNIRegistrationMethod)
         self.transform_node.SetName("to_mni")
 
     def apply_normalization(self, shape_im):
@@ -392,20 +406,23 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.inputSelector.currentNodeChanged(t1_node)
 
     def onSegmentationButtonClicked(self):
-        mm_offset = 2
+
         print("Starting segmentation")
 
         left, right = self.logic.segmentSTNs(self.t2_node)
 
         ## add mni^-1 transformation to the mesh nodes
 
-        # invert tranform node
-        inverted_transform = slicer.vtkMRMLTransformNode()
-        inverted_transform.SetName("to_mni_inverted")
-        mt1 = vtk.vtkMatrix4x4()
 
-        self.transform_node.GetMatrixTransformFromParent(mt1)
-        inverted_transform.SetMatrixTransformToParent(mt1)
+
+        # invert tranform node
+
+        inverted_transform = slicer.mrmlScene.CopyNode(self.transform_node)
+
+        inverted_transform.SetName("to_mni_inverted")
+        inverted_transform.Inverse()
+
+
         slicer.mrmlScene.AddNode(inverted_transform)
         # inverted_transform.SetMatrixTransformToParent(self.transform_node.GetMatrixTransformToParent())
 
@@ -449,10 +466,10 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.setParameterNode(self.logic.getParameterNode())
 
         # Select default input nodes if nothing is selected yet to save a few clicks for the user
-        if not self._parameterNode.inputVolume:
+        if not self._parameterNode.structuralVolume:
             firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
             if firstVolumeNode:
-                self._parameterNode.inputVolume = firstVolumeNode
+                self._parameterNode.structuralVolume = firstVolumeNode
 
     def setParameterNode(self, inputParameterNode: Optional[STNSegmenterParameterNode]) -> None:
         """
@@ -472,7 +489,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._checkCanApply()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.thresholdedVolume:
+        if self._parameterNode and self._parameterNode.structuralVolume and self._parameterNode.thresholdedVolume:
             self.ui.applyButton.toolTip = _("Compute output volume")
             self.ui.applyButton.enabled = True
         else:
@@ -548,48 +565,75 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         net.load_state_dict(cd_state_dict)
         self.shape_predictor = net
 
+
     def getParameterNode(self):
         return STNSegmenterParameterNode(super().getParameterNode())
 
     def process(self,
-                inputVolume: vtkMRMLScalarVolumeNode,
-                outputVolume: vtkMRMLScalarVolumeNode,
+                structuralVolume: vtkMRMLScalarVolumeNode,
+                t2Volume: vtkMRMLScalarVolumeNode,
                 imageThreshold: float,
                 invert: bool = False,
                 showResult: bool = True) -> None:
         """
         Run the processing algorithm.
         Can be used without GUI widget.
-        :param inputVolume: volume to be thresholded
+        :param structuralVolume: volume to be thresholded
         :param outputVolume: thresholding result
         :param imageThreshold: values above/below this threshold will be set to 0
         :param invert: if True then values above the threshold will be set to 0, otherwise values below are set to 0
         :param showResult: show output volume in slice viewers
         """
 
-        if not inputVolume or not outputVolume:
-            raise ValueError("Input or output volume is invalid")
+        if not structuralVolume or not t2Volume:
+            raise ValueError("Input or T2 volume is invalid")
 
         import time
 
         startTime = time.time()
         logging.info("Processing started")
-
+        right, left = None,None
         # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
-        cliParams = {
-            "InputVolume": inputVolume.GetID(),
-            "OutputVolume": outputVolume.GetID(),
-            "ThresholdValue": imageThreshold,
-            "ThresholdType": "Above" if invert else "Below",
-        }
-        cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True,
-                                 update_display=showResult)
-        # We don't need the CLI module node anymore, remove it to not clutter the scene with it
-        slicer.mrmlScene.RemoveNode(cliNode)
+        # create temp workdir
+        try:
+            temp_workdir = tempfile.TemporaryDirectory()
+            sn1 = STNSegmenter.check_storage_node(structuralVolume, temp_workdir)
+            sn2 = STNSegmenter.check_storage_node(t2Volume, temp_workdir)
+
+            # register t2 to t1
+            self.coregistration_t2_t1(sn1
+                                       , t2=sn2,
+                                       out_name=str(Path(temp_workdir.name) / "coreg_t2.nii.gz"))
+            t2_node = STNSegmenter.loadNiiImage(str(Path(temp_workdir.name) / "coreg_t2.nii.gz"))
+            # brain extraction
+
+            self.brain_extraction(sn1, temp_workdir.name)
+
+            t1_node = STNSegmenter.loadNiiImage(str(Path(temp_workdir.name) / "t1.nii.gz"))
+            print("Brain extracted")
+            # # wm segmentation
+            self.wm_segmentation(str(Path(temp_workdir.name) / "t1.nii.gz"), temp_workdir.name)
+            print("WM segmented")
+            # # intensity normalisation
+            self.intensity_normalisation(temp_workdir.name)
+            t2_node = STNSegmenter.loadNiiImage(str(Path(temp_workdir.name) / "t2_normalised.nii.gz"))
+            print("Coregistering T2 to T1")
+            transform_node = self.two_step_coregistration(t2_node, temp_workdir.name)
+            transform_node.SetName("to_mni")
+
+            (right, _), (left, _) = self.segmentSTNs(t2_node)
+            print("STNs segmented")
+
+            #
+        finally:
+            self.processing_folder.cleanup()
+            self.processing_folder = None
+
+
 
         stopTime = time.time()
         logging.info(f"Processing completed in {stopTime - startTime:.2f} seconds")
-
+        return right,left
     def brain_extraction(self, t1: vtkMRMLVolumeArchetypeStorageNode, temp_dir_path) -> None:
         image_name = t1.GetFileName()
         mask_filename = str(Path(temp_dir_path) / "t1_mask.nii.gz")
@@ -603,14 +647,18 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
             ants.image_write(mask, mask_filename)
             ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
         elif sys.platform == 'darwin':
-            cmd = "python -c 'import antspynet;import ants;from pathlib import Path;"
+            import DBS_Settings
+            pyth = DBS_Settings.PythonExeDBSPath().getValue()
+            cmd = f"{pyth} -c 'import antspynet;import ants;from pathlib import Path;"
             cmd += f"img=ants.image_read(\"{image_name}\");"
             cmd += f"mask=antspynet.brain_extraction(img, \"t1\") > 0.8;"
             cmd += f"masked_image=img*mask;"
             cmd += f"ants.image_write(mask, \"{mask_filename}\");"
             cmd += f"ants.image_write(masked_image, \"{str(Path(temp_dir_path) / 't1.nii.gz')}\")'"
+
+            print(cmd)
             cmd = shlex.split(cmd)
-            subprocess.check_output(cmd)
+            subprocess.check_output(cmd,env={})
 
         print("FINISHED EXTRACTOR")
         # cmd = [sys.executable, self.resourcePath("py/bet.py"), str(image_name), mask_filename, str(Path(temp_dir_path) / "t1.nii.gz")]
@@ -625,6 +673,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         t2_path = t2.GetFileName()
         print(t1_path)
         print(t2_path)
+
         # Elastix.ElastixLogic().register()
         slicer_preprocessing.elastix_registration(
             ref_image=t1_path,
@@ -635,25 +684,73 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
          .rename((out_name)))
 
     def wm_segmentation(self, t1: str, out_folder: str) -> None:
-        slicer_preprocessing.wm_segmentation(t1, out_folder)
+        if sys.platform == 'win32':
+            slicer_preprocessing.wm_segmentation(t1, out_folder)
+        else:
+            import DBS_Settings
+            pyth = DBS_Settings.PythonExeDBSPath().getValue()
+            slicer_preprocessing.wm_segmentation(t1, out_folder,pyth)
 
-    def intensity_normalisation(self, out_folder: str) -> None:
-        slicer_preprocessing.intensity_normalisation(out_folder)
 
-    def two_step_coregistration(self, node_to_transform, workdir: str) -> vtkMRMLTransformNode:
-        mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')
-        elastix_affine = self.resourcePath('elastix/affine_mri.txt')
-        struct_image = str(Path(workdir) / "t1.nii.gz")
-        slicer_preprocessing.elastix_registration(ref_image=mni,
-                                                  flo_image=struct_image,
-                                                  elastix_parameters=elastix_affine,
-                                                  out_folder=workdir)
-        tfm_file = Path(workdir) / "TransformParameters.0.tfm"
-        transfortm_node = slicer.util.loadTransform(tfm_file)
+    def _get_elastix_executable(self):
+        import Elastix
+        lgc= Elastix.ElastixLogic()
 
-        node_to_transform.SetAndObserveTransformNodeID(transfortm_node.GetID())
+        res = Path(lgc.getElastixBinDir())/ lgc.elastixFilename
+
+        return str(res)
+
+    def intensity_normalisation(self, out_folder: str, t2_file_name: str) -> None:
+        slicer_preprocessing.intensity_normalisation(out_folder,t2_file_name)
+
+    def two_step_coregistration(self, node_to_transform, workdir: str, method = "Rigid") -> vtkMRMLTransformNode:
+        # Define paths
+        import ants
+        # Define paths
+        mni = self.resourcePath('MNI/MNI152_T1_1mm_brain.nii.gz')  # Reference image (fixed)
+        struct_image = str(Path(workdir) / "t1.nii.gz")  # Moving image
+        output_transform_prefix = str(Path(workdir) / "transform")  # Prefix for output transforms
+
+        # Load fixed and moving images using ANTs
+        fixed_image = ants.image_read(mni)
+        moving_image = ants.image_read(struct_image)
+
+        # Perform rigid registration
+        registration = ants.registration(
+            fixed=fixed_image,
+            moving=moving_image,
+            type_of_transform=method,  # Use rigid transformation
+            outprefix=output_transform_prefix
+        )
+
+        print("fwdtransfs : ", registration['fwdtransforms'])
+
+        len_reg = len(registration['fwdtransforms'])
+        transform_file = registration['fwdtransforms'][0]  # Path to the forward transform file
+
+        transform_node = slicer.util.loadTransform(transform_file)
+        if len_reg > 1:
+            transform_file_next = None
+            for i in range(1, len_reg):
+                transform_file_next = registration['fwdtransforms'][i]
+                transform_node_next = slicer.util.loadTransform(transform_file_next)
+                transform_node.SetAndObserveTransformNodeID(transform_node_next.GetID())
+                transform_node.HardenTransform()
+
+
+
+
+        # # Get the forward transform file from the registration results
+        # transform_file = registration['fwdtransforms'][0]  # Path to the forward transform file
+        #
+        # transform_node = slicer.util.loadTransform(transform_file)
+
+        # Apply the transform to the input node
+        node_to_transform.SetAndObserveTransformNodeID(transform_node.GetID())
         node_to_transform.HardenTransform()
-        return transfortm_node
+
+        # Return the transform node
+        return transform_node
 
     def segmentSTNs(self, t2_node) -> Tuple[MESH_results, MESH_results]:
         mm_offset = 2
@@ -792,7 +889,9 @@ def display_mesh(mesh, node_name):
     displayNode.SetVisibility3D(1)
     displayNode.SetVisibility2D(1)
     displayNode.SetOpacity(0.3)
+    displayNode.SetColor(207 / 255., 75/255., 75 / 255.)
     displayNode.Modified()
+
     return modelNode
 
 
@@ -836,10 +935,10 @@ class STNSegmenterTest(ScriptedLoadableModuleTest):
         import SampleData
 
         registerSampleData()
-        inputVolume = SampleData.downloadSample("STNSegmenter1")
+        structuralVolume = SampleData.downloadSample("STNSegmenter1")
         self.delayDisplay("Loaded test data set")
 
-        inputScalarRange = inputVolume.GetImageData().GetScalarRange()
+        inputScalarRange = structuralVolume.GetImageData().GetScalarRange()
         self.assertEqual(inputScalarRange[0], 0)
         self.assertEqual(inputScalarRange[1], 695)
 
@@ -851,13 +950,13 @@ class STNSegmenterTest(ScriptedLoadableModuleTest):
         logic = STNSegmenterLogic()
 
         # Test algorithm with non-inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, True)
+        logic.process(structuralVolume, outputVolume, threshold, True)
         outputScalarRange = outputVolume.GetImageData().GetScalarRange()
         self.assertEqual(outputScalarRange[0], inputScalarRange[0])
         self.assertEqual(outputScalarRange[1], threshold)
 
         # Test algorithm with inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, False)
+        logic.process(structuralVolume, outputVolume, threshold, False)
         outputScalarRange = outputVolume.GetImageData().GetScalarRange()
         self.assertEqual(outputScalarRange[0], inputScalarRange[0])
         self.assertEqual(outputScalarRange[1], inputScalarRange[1])
@@ -894,3 +993,4 @@ class STNSegmenterTest(ScriptedLoadableModuleTest):
             shape, result_center = apply_mirror(shape, result_center)
 
         return change_mesh(mesh, shape), result_center, res_pts
+

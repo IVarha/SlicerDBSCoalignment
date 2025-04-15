@@ -7,9 +7,6 @@ import nibabel as nib
 import numpy as np
 from intensity_normalization.cli.fcm import fcm_main
 import sys
-import ants
-if sys.platform == 'win32':
-    import antspynet
 
 
 def register_t2_to_t1(script_home, t1, t2, out_name):
@@ -23,33 +20,37 @@ def register_t2_to_t1(script_home, t1, t2, out_name):
 
     subprocess.check_output(flirt_command)
 
-def _run_cli_wm_segmentation(t1, out_folder):
+def _run_cli_wm_segmentation(t1, out_folder,pyth):
     import subprocess
     import shlex
 
-    cmd = f"python -c 'import antspynet;import ants;from pathlib import Path;"
-    cmd += f"res=antspynet.deep_atropos({t1}, verbose=True);si=res[\"segmentation_image\"];"
+    cmd = f"{pyth} -c 'import antspynet;import ants;from pathlib import Path;"
+    cmd += f"t1_image = ants.image_read(\"{t1}\");"
+    cmd += f"res=antspynet.deep_atropos(t1_image, verbose=True);si=res[\"segmentation_image\"];"
     cmd += f"wm=(si==3) or (si==4) or (si==5);"
     cmd += f"wm_file=str(Path(\"{out_folder}\") / \"wm_mask.nii.gz\");"
     cmd += f"ants.image_write(wm, wm_file)'"
 
+
     print(cmd)
 
     cmd = shlex.split(cmd)
-    subprocess.check_output(cmd)
+    subprocess.check_output(cmd,env={})
 
     pass
 
-def wm_segmentation(t1, out_folder):
+def wm_segmentation(t1, out_folder,pyth=None):
     """
     t1: str t1 file
     out_folder: s
     """
     print(t1)
 
-    t1_image = ants.image_read(t1)
+
     if sys.platform == 'win32':
         import antspynet
+        import ants
+        t1_image = ants.image_read(t1)
         res = antspynet.deep_atropos(t1_image, verbose=True)
 
         si = res['segmentation_image']
@@ -58,7 +59,7 @@ def wm_segmentation(t1, out_folder):
         wm_file = str(Path(out_folder) / "wm_mask.nii.gz")
         ants.image_write(wm, wm_file)
     elif sys.platform == 'darwin':
-        res = _run_cli_wm_segmentation(t1, out_folder)
+        res = _run_cli_wm_segmentation(t1, out_folder,pyth)
 
 
 
@@ -81,13 +82,13 @@ def binarise_threshold(filename, threshold, save_filename):
     nib.save(new_nifti_img, save_filename)
 
 
-def intensity_normalisation(out_folder):
+def intensity_normalisation(out_folder,t2_file):
     """
     Script for intensity normalisation
     works with out_folder/coreg_t2.nii.gz
     """
     file_name = "t2_normalised.nii.gz"
-    t2_file = str(Path(out_folder) / "coreg_t2.nii.gz")
+    #t2_file = str(Path(out_folder) / "coreg_t2.nii.gz")
     wm_mask = str(Path(out_folder) / "wm_mask.nii.gz")
 
     run_wm_slab_creation = ["fcm-normalize", t2_file, "-tm", wm_mask, "-o", str(Path(out_folder) / file_name), "-mo",
@@ -97,12 +98,12 @@ def intensity_normalisation(out_folder):
     fcm_main()
 
 
-def elastix_registration(ref_image,
+def elastix_registration_cmd(ref_image,
                          flo_image,
                          elastix_parameters,
                          out_folder):
-    flirt_command = ["elastix", "-f", ref_image, "-m", str(flo_image), "-p", elastix_parameters, "-out", out_folder]
-    subprocess.check_output(flirt_command)
+    flirt_command = [ "-f", ref_image, "-m", str(flo_image), "-p", elastix_parameters, "-out", out_folder]
+    return flirt_command
 
 
 def convert_matrix_to_slicer_transformation(matrix: np.ndarray, out_file: str):
