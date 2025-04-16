@@ -1,3 +1,11 @@
+Project: SlicerDBSCoalignment
+
+This project focuses on improving the precision of electrode placement in Deep Brain Stimulation (DBS) surgery by integrating neuroimaging data with intraoperative microelectrode recordings (MER). We propose a multimodal pipeline that combines deep learning-based segmentation of the subthalamic nucleus (STN) with spatial optimisation of MER trajectories. Implemented as a 3D Slicer plugin and integrated into the Lead-OR framework, the method supports accurate STN identification, accounts for intraoperative brain shift, and provides real-time visualisation tools for neurosurgical applications
+
+This project licensed under MIT License - see the [LICENSE](LICENSE.txt) file for details.
+
+
+
 ## Install Instructions
 
 ### Windows
