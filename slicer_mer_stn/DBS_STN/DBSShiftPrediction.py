@@ -2,7 +2,7 @@ import logging
 
 import scipy.optimize as optimize
 import slicer
-
+import math
 try:
     import pandas as pd
 except ImportError:
@@ -639,9 +639,6 @@ class OptimisationMethod:
 
 
 
-
-
-
 class BayesianOptimization(OptimisationMethod):
     def __init__(self, settings):
         super().__init__(settings)
@@ -732,7 +729,20 @@ class Brute(OptimisationMethod):
             n_s = settings['number_steps']
         else:
             n_s = 7
-        ds = [((bounds[i][1] - bounds[i][0])/ ( n_s -1)) for i in range(len(bounds))]
+
+        def func_05(x):
+            raw_step = (x[1] - x[0]) / (n_s - 1)  # Compute the initial step size
+            step = min(raw_step, 0.5)  # Ensure the step is at most 0.5
+            n_intervals = ((x[1] - x[0]) / step)  # Ensure divisibility without exceeding 0.5
+            if step <= 0.5:
+                return step
+
+            n_intervals = math.floor(n_intervals) + 1
+            step = (x[1] - x[0]) / n_intervals  # Recalculate step to perfectly divide range
+            return step
+
+
+        ds = [func_05(bounds[i]) for i in range(len(bounds))]
         self.steps = ds
         self.ranges = [slice(bounds[0][0], bounds[0][1], ds[0]),
                        slice(bounds[1][0], bounds[1][1], ds[1]),
@@ -762,14 +772,17 @@ class BrutePowell(OptimisationMethod):
 
             self.bounds = bounds
 
-            self.inside_levels = 3
+            if 'inside_levels' in settings:
+                self.inside_levels = settings['inside_levels']
+            else:
+                self.inside_levels = 3
 
 
 
 
             br = Brute({'bounds': bounds})
             self.br = br
-            self.pb = PowellWithBounds({'bounds': bounds})
+            # self.pb = PowellWithBounds({'bounds': bounds})
 
 
         def __call__(self, function):
@@ -796,6 +809,7 @@ class BrutePowell(OptimisationMethod):
 
             init = res['x']
             print("init", init)
+            self.pb = PowellWithBounds({'bounds': new_bounds})
             self.pb.initial_guess = init
             res = self.pb(function)
             print("final result ", res['x'], 'fun', res['fun'])
@@ -1983,7 +1997,7 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
     def predict_shift(self, text_node: "vtkMRMLTextNode", side: bool,
                       to_mni: vtkMRMLLinearTransformNode, mesh: vtk.vtkPolyData,
-                      pcas, lambda1, distance,max_shift = 2,scaling_range=(0.8,1.2),
+                      pcas, lambda1, distance,max_shift = 2.0,scaling_range=(0.8,1.2),
                       optimiser = None):
         """
         Predicts the shift for electrode placement based on MER data and mesh.
