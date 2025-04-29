@@ -51,7 +51,7 @@ from MRMLCorePython import vtkMRMLModelNode, vtkMRMLTransformNode, vtkMRMLTextNo
 try:
     from dbs_image_utils.mask import SubcorticalMask
 except ImportError:
-    slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\dbs_pure_lib')
+    slicer.util.pip_install(r'dbs-pure-lib')
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import TransformerClassifier
 try:
