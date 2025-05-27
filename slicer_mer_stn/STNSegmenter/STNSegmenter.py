@@ -22,17 +22,6 @@ except ImportError:
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
 
-try:
-    import fsl.data.image as fim
-except ImportError:
-    slicer.util.pip_install('fslpy')
-    import fsl.data.image as fim
-
-try:
-    import mer_lib.artefact_detection as ad
-except ImportError:
-    #slicer.util.pip_install(r'C:\\Users\\h492884\\PycharmProjects\\MER_lib') todo add installation
-    import mer_lib.artefact_detection as ad
 
 if sys.platform == 'win32':
     try:
