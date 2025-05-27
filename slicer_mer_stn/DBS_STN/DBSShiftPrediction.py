@@ -54,12 +54,7 @@ except ImportError:
     slicer.util.pip_install(r'dbs-pure-lib')
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import TransformerClassifier
-try:
 
-    from mer_lib.data import MER_data
-except ImportError:
-    slicer.util.pip_install(r'pandas-ods-reader')
-    from mer_lib.data import MER_data
 from slicer import vtkMRMLScalarVolumeNode
 from slicer.ScriptedLoadableModule import *
 from slicer.parameterNodeWrapper import (
