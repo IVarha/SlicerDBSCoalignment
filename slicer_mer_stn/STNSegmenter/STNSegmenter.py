@@ -22,7 +22,7 @@ except ImportError:
     if sys.platform == 'win32':
         slicer.util.pip_install('antspyx')
         slicer.util.pip_install('antspynet')
-
+    slicer.util.pip_install('dbs-image-utils')
     from segm_lib import slicer_preprocessing
     from segm_lib.image_utils import SlicerImage
 
@@ -30,7 +30,7 @@ try:
     from dbs_image_utils.mask import SubcorticalMask
 except ImportError:
 
-    #slicer.util.pip_install('dbs-image-utils')
+    slicer.util.pip_install('dbs-image-utils')
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
 
