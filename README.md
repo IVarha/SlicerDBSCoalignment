@@ -10,27 +10,7 @@ This project licensed under MIT License - see the [LICENSE](LICENSE.txt) file fo
 
 ### Windows
 
-1. Clone the repository:
-    ```sh
-    git clone https://github.com/your-repo/slicerMER.git
-    cd slicerMER
-    ```
-
-2. Create a virtual environment and activate it:
-    ```sh
-    python -m venv venv
-    .\venv\Scripts\activate
-    ```
-
-3. Install the required dependencies:
-    ```sh
-    pip install -r requirements.txt
-    ```
-
-4. Run the application:
-    ```sh
-    python main.py
-    ```
+Install from plugin sourse default
 
 ### macOS
 
