@@ -18,7 +18,7 @@ from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLTransformNo
 try:
     from dbs_image_utils.mask import SubcorticalMask
 except ImportError:
-    slicer.util.pip_install('dbs-image-utils')
+    slicer.util.pip_install('dbs-pure-lib')
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
 
