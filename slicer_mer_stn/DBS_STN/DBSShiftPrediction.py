@@ -61,7 +61,11 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
 )
 from slicer.util import VTKObservationMixin
-
+try:
+    import mer_lib
+except ImportError:
+    slicer.util.pip_install('MER-lib')
+    import mer_lib
 from Lib import slicer_preprocessing
 from Lib.mer_support import cross_generation_mni, ElectrodeRecord, \
     extract_points_from_mesh
