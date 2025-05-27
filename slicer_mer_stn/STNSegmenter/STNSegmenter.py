@@ -13,23 +13,11 @@ import slicer
 from MRMLCorePython import vtkMRMLVolumeArchetypeStorageNode, vtkMRMLTransformNode, vtkMRMLModelNode, \
     vtkMRMLModelDisplayNode
 
-try:
-    from segm_lib import slicer_preprocessing
-    from segm_lib.image_utils import SlicerImage
-except ImportError:
-    slicer.util.pip_install(r'nibabel')
-    slicer.util.pip_install('intensity-normalization')
-    if sys.platform == 'win32':
-        slicer.util.pip_install('antspyx')
-        slicer.util.pip_install('antspynet')
-    slicer.util.pip_install('dbs-image-utils')
-    from segm_lib import slicer_preprocessing
-    from segm_lib.image_utils import SlicerImage
+
 
 try:
     from dbs_image_utils.mask import SubcorticalMask
 except ImportError:
-
     slicer.util.pip_install('dbs-image-utils')
     from dbs_image_utils.mask import SubcorticalMask
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
@@ -362,6 +350,17 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyWMSeg(self) -> None:
         print("start on onApplyWMSeg")
+        try:
+            from segm_lib import slicer_preprocessing
+        except ImportError:
+            slicer.util.pip_install(r'nibabel')
+            slicer.util.pip_install('intensity-normalization')
+            if sys.platform == 'win32':
+                slicer.util.pip_install('antspyx')
+                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('dbs-image-utils')
+            from segm_lib import slicer_preprocessing
+
         if sys.platform == 'win32':
             slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
                                                  out_folder=self.temp_workdir.name)
@@ -376,7 +375,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyIntensity(self):
         print("test onApplyIntensity")
-        # slicer_preprocessing.intensity_normalisation(self.temp_workdir.name)
+
         if self.wm_seg_done:
             print(check_storage_node(self.t2_node, self.temp_workdir).GetFileName())
             self.logic.intensity_normalisation(self.temp_workdir.name,t2_file_name= check_storage_node(self.t2_node, self.temp_workdir).GetFileName())
@@ -667,6 +666,18 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
 
     def coregistration_t2_t1(self, t1: vtkMRMLVolumeArchetypeStorageNode, t2: vtkMRMLVolumeArchetypeStorageNode,
                              out_name: str) -> None:
+        try:
+            from segm_lib import slicer_preprocessing
+            from segm_lib.image_utils import SlicerImage
+        except ImportError:
+            slicer.util.pip_install(r'nibabel')
+            slicer.util.pip_install('intensity-normalization')
+            if sys.platform == 'win32':
+                slicer.util.pip_install('antspyx')
+                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('dbs-image-utils')
+            from segm_lib import slicer_preprocessing
+            from segm_lib.image_utils import SlicerImage
 
         out_folder = str(Path(out_name).parent)
         t1_path = t1.GetFileName()
@@ -684,6 +695,19 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
          .rename((out_name)))
 
     def wm_segmentation(self, t1: str, out_folder: str) -> None:
+        try:
+            from segm_lib import slicer_preprocessing
+            from segm_lib.image_utils import SlicerImage
+        except ImportError:
+            slicer.util.pip_install(r'nibabel')
+            slicer.util.pip_install('intensity-normalization')
+            if sys.platform == 'win32':
+                slicer.util.pip_install('antspyx')
+                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('dbs-image-utils')
+            from segm_lib import slicer_preprocessing
+            from segm_lib.image_utils import SlicerImage
+
         if sys.platform == 'win32':
             slicer_preprocessing.wm_segmentation(t1, out_folder)
         else:
@@ -701,6 +725,18 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         return str(res)
 
     def intensity_normalisation(self, out_folder: str, t2_file_name: str) -> None:
+        try:
+            from segm_lib import slicer_preprocessing
+            from segm_lib.image_utils import SlicerImage
+        except ImportError:
+            slicer.util.pip_install(r'nibabel')
+            slicer.util.pip_install('intensity-normalization')
+            if sys.platform == 'win32':
+                slicer.util.pip_install('antspyx')
+                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('dbs-image-utils')
+            from segm_lib import slicer_preprocessing
+            from segm_lib.image_utils import SlicerImage
         slicer_preprocessing.intensity_normalisation(out_folder,t2_file_name)
 
     def two_step_coregistration(self, node_to_transform, workdir: str, method = "Rigid") -> vtkMRMLTransformNode:
@@ -755,6 +791,17 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
     def segmentSTNs(self, t2_node) -> Tuple[MESH_results, MESH_results]:
         mm_offset = 2
         print("Starting segmentation")
+        try:
+            from segm_lib.image_utils import SlicerImage
+        except ImportError:
+            slicer.util.pip_install(r'nibabel')
+            slicer.util.pip_install('intensity-normalization')
+            if sys.platform == 'win32':
+                slicer.util.pip_install('antspyx')
+                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('dbs-image-utils')
+            from segm_lib import slicer_preprocessing
+            from segm_lib.image_utils import SlicerImage
 
         t2 = t2_node
         image_processor = SlicerImage(t2.GetImageData())
