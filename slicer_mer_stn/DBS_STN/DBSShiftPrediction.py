@@ -29,11 +29,7 @@ import fsl.transform.flirt as fl
 import numpy as np
 import qt
 import vtk
-try:
-    import bayes_opt
-except ImportError:
-    slicer.util.pip_install('bayesian-optimization')
-    import bayes_opt
+
 try:
     import torch
 except ImportError:
@@ -61,11 +57,7 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
 )
 from slicer.util import VTKObservationMixin
-try:
-    import mer_lib
-except ImportError:
-    slicer.util.pip_install('MER-lib')
-    import mer_lib
+
 from Lib import slicer_preprocessing
 from Lib.mer_support import cross_generation_mni, ElectrodeRecord, \
     extract_points_from_mesh
@@ -197,22 +189,6 @@ def convert_to_numpy_array(matrix):
 def apply_transformation(entry_target, transformation_matrix):
     return cross_generation_mni(ent_tg_native=entry_target, to_mni=transformation_matrix)
 
-
-
-def extract_electrode_records(entry_target, mer_data, transformation_matrix):
-    """
-    Extracts electrode records from an array of MER data.
-
-    Args:
-        entry_target (str): The target entry for electrode extraction.
-        mer_data (array): The array of MER data.
-        transformation_matrix (array): The transformation matrix for coordinate transformation.
-
-    Returns:
-        list: A list of extracted electrode records.
-    """
-    return ElectrodeRecord.extract_electrode_records_from_array(entry_target, mer_data,
-                                                                transformation=transformation_matrix)
 
 
 def read_mesh(file_name):

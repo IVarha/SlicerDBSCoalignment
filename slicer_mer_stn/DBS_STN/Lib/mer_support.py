@@ -4,7 +4,6 @@ from typing import Optional, List, Iterable, Dict
 import numpy as np
 import torch
 import vtk
-from mer_lib.data import MER_data
 
 
 @dataclass
@@ -241,7 +240,7 @@ class ElectrodeRecord:
 
     @staticmethod
     def extract_electrode_records_from_array(array: ElectrodeArray,
-                                             mer_data: MER_data,
+                                             mer_data,
                                              transformation: Optional[np.ndarray]) -> Dict[
         str, List["ElectrodeRecord"]]:
         """
