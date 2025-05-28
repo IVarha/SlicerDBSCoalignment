@@ -14,27 +14,23 @@ import pickle
 import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, List, Union
-
-from torch import nn
-from torch.nn import functional as F
-
 try:
-    import fsl.data.image as fim
+    import torch
+    from torch import nn
+    from torch.nn import functional as F
 except ImportError:
-    slicer.util.pip_install('fslpy')
-    import fsl.data.image as fim
-import fsl.transform.flirt as fl
+    slicer.util.pip_install('torch')
+    import torch
+    from torch import nn
+    from torch.nn import functional as F
+
 
 
 import numpy as np
 import qt
 import vtk
 
-try:
-    import torch
-except ImportError:
-    slicer.util.pip_install('torch')
-    import torch
+
 try:
     import intensity_normalization as inorm
 except ImportError:
@@ -100,25 +96,6 @@ class ShiftResult:
 
 
 
-def get_flirt_transformation_matrix(mat_file, src_file, dest_file, from_, to):
-    """
-    Get the transformation matrix using FLIRT.
-
-    Args:
-        mat_file (str): Path to the FLIRT transformation matrix file.
-        src_file (str): Path to the source image file.
-        dest_file (str): Path to the destination image file.
-        from_ (str): Source image space.
-        to (str): Destination image space.
-
-    Returns:
-        numpy.ndarray: The transformation matrix.
-
-    """
-    im_src = fim.Image(src_file, loadData=False)
-    im_dest = fim.Image(dest_file, loadData=False)
-    forward_transf_fsl = fl.readFlirt(mat_file)
-    return fl.fromFlirt(forward_transf_fsl, im_src, im_dest, from_, to)
 
 
 def get_control_points(markups_node):
