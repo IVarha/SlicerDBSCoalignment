@@ -8,9 +8,21 @@ This project licensed under MIT License - see the [LICENSE](LICENSE.txt) file fo
 
 ## Install Instructions
 
+Pre-requisites:
+- 3D Slicer 5.2 or later
+- Installed plugins in 3D Slicer:
+  - [SlicerNetsim]
+  - [SlicerOpenIGTLink]
+- Python 3.8 or later (for macOS and Linux)
+- TensorFlow 2.4 or later (for macOS and Linux)
+- ANTsPyNet (for macOS and Linux)
+- ANTsPy (for macOS and Linux)
+
+
 ### Windows
 
 Install from plugin sourse default
+
 
 ### macOS
 
