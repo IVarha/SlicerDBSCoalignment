@@ -124,22 +124,21 @@
      </layout>
     </widget>
    </item>
-   <item>
-    <widget class="ctkCollapsibleButton" name="outputsCollapsibleButton">
-     <property name="text">
-      <string>Markups Entry Exit</string>
-     </property>
-     <layout class="QFormLayout" name="formLayout_4">
+<item>
+  <widget class="QGroupBox" name="outputsGroupBox">
+    <property name="title">
+    </property>
+    <layout class="QFormLayout" name="formLayout_4">
       <item row="0" column="0" colspan="2">
-       <widget class="QPushButton" name="merFinalButton">
-        <property name="text">
-         <string>Estimate Shift</string>
-        </property>
-       </widget>
+        <widget class="QPushButton" name="merFinalButton">
+          <property name="text">
+            <string>Estimate Shift</string>
+          </property>
+        </widget>
       </item>
-     </layout>
-    </widget>
-   </item>
+    </layout>
+  </widget>
+</item>
    <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
