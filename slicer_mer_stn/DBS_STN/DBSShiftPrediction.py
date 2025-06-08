@@ -64,41 +64,66 @@ import dataclasses
 
 @dataclasses.dataclass
 class ShiftResult:
+    """
+    A data class representing the results of a DBS shift prediction.
+    
+    Attributes:
+        number_of_records (int): Total number of MER records processed
+        cor_recs_a_shift (int): Number of correctly classified records after shift
+        cor_recs_b_shift (int): Number of correctly classified records before shift
+        shift (np.ndarray): The computed shift vector (x, y, z)
+        scaling (np.ndarray): The computed scaling factor
+        optimised_value_orig (float): Original optimization value before shift
+        optimised_value_final (float): Final optimization value after shift
+        mer_classes (np.array): Classification results for MER signals
+        mer_nrms (np.array): Normalized RMS values for MER signals
+        center_electrodes (np.array): Center coordinates of the electrode array
+    """
     number_of_records: int
     cor_recs_a_shift: int
     cor_recs_b_shift: int
     shift: np.ndarray
     scaling: np.ndarray
-    optimised_value_orig : float
-    optimised_value_final : float
+    optimised_value_orig: float
+    optimised_value_final: float
     mer_classes: np.array
-    mer_nrms : np.array
-    center_electrodes : np.array
+    mer_nrms: np.array
+    center_electrodes: np.array
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """
+        Returns a string representation of the shift result.
+        
+        Returns:
+            str: A formatted string containing key shift result information
+        """
         return (f"Number of records: {self.number_of_records}, "
                 f"Correct records after shift: {self.cor_recs_a_shift}, "
-                f"Correct records before shift: {self.cor_recs_b_shift}, Shift: {self.shift}, Scaling: {self.scaling}")
+                f"Correct records before shift: {self.cor_recs_b_shift}, "
+                f"Shift: {self.shift}, Scaling: {self.scaling}")
 
-    # convert to dictionary
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """
+        Converts the shift result to a dictionary.
+        
+        Returns:
+            dict: A dictionary containing the shift result data
+        """
+        return {
+            "number_of_records": self.number_of_records,
+            "cor_recs_a_shift": self.cor_recs_a_shift,
+            "cor_recs_b_shift": self.cor_recs_b_shift,
+            "shift": self.shift,
+            "scaling": self.scaling,
+            "optimised_value_orig": self.optimised_value_orig,
+            "optimised_value_final": self.optimised_value_final,
+        }
 
-        res = { "number_of_records": self.number_of_records,
-                "cor_recs_a_shift": self.cor_recs_a_shift,
-                "cor_recs_b_shift": self.cor_recs_b_shift,
-                "shift": self.shift,
-                "scaling": self.scaling,
-                "optimised_value_orig": self.optimised_value_orig,
-                "optimised_value_final": self.optimised_value_final,
-                }
-
-        return res
 
 
 
 
-
-def get_control_points(markups_node):
+def get_control_points(markups_node) -> list[tuple[float, float, float]]:
     """
     Retrieves the world positions of all control points in a markups node.
 
@@ -106,9 +131,9 @@ def get_control_points(markups_node):
         markups_node: The markups node from which to retrieve the control points.
 
     Returns:
-        A list of world positions of all control points in the markups node.
+        List of (x, y, z) tuples for each control point.
     """
-    points = []
+    points: list[tuple[float, float, float]] = []
     for i in range(markups_node.GetNumberOfControlPoints()):
         points.append(markups_node.GetNthControlPointPositionWorld(i))
     return points
@@ -140,22 +165,43 @@ def clone_mesh_node( mesh_node, new_name):
     return copied_node
 
 
-def get_transform_matrix(transform_node):
+def get_transform_matrix(transform_node: vtkMRMLTransformNode) -> vtk.vtkMatrix4x4:
     """
-    Get the transformation matrix of a given transform node.
-
-    Parameters:
-    transform_node (vtk.vtkTransformNode): The transform node to get the matrix from.
-
+    Get the transformation matrix from a transform node.
+    
+    Args:
+        transform_node (vtkMRMLTransformNode): The transform node to extract the matrix from
+        
     Returns:
-    vtk.vtkMatrix4x4: The transformation matrix.
+        vtk.vtkMatrix4x4: The 4x4 transformation matrix
+        
+    Raises:
+        ValueError: If the transform node is invalid or the matrix cannot be retrieved
     """
+    if not transform_node:
+        raise ValueError("Invalid transform node provided")
+        
     matrix = vtk.vtkMatrix4x4()
     transform_node.GetMatrixTransformToParent(matrix)
     return matrix
 
 
-def convert_to_numpy_array(matrix):
+def convert_to_numpy_array(matrix: vtk.vtkMatrix4x4) -> np.ndarray:
+    """
+    Convert a VTK 4x4 matrix to a NumPy array.
+    
+    Args:
+        matrix (vtk.vtkMatrix4x4): The VTK matrix to convert
+        
+    Returns:
+        np.ndarray: A 4x4 NumPy array containing the matrix elements
+        
+    Raises:
+        ValueError: If the input matrix is invalid
+    """
+    if not matrix:
+        raise ValueError("Invalid matrix provided")
+        
     numpy_array = np.zeros((4, 4))
     for i in range(4):
         for j in range(4):
@@ -163,62 +209,118 @@ def convert_to_numpy_array(matrix):
     return numpy_array
 
 
-def apply_transformation(entry_target, transformation_matrix):
+def apply_transformation(entry_target: np.ndarray, transformation_matrix: np.ndarray) -> np.ndarray:
+    """
+    Apply a transformation matrix to target coordinates.
+    
+    Args:
+        entry_target (np.ndarray): Target coordinates to transform
+        transformation_matrix (np.ndarray): 4x4 transformation matrix
+        
+    Returns:
+        np.ndarray: Transformed coordinates
+        
+    Raises:
+        ValueError: If input arrays have invalid shapes or types
+    """
+    if not isinstance(entry_target, np.ndarray) or not isinstance(transformation_matrix, np.ndarray):
+        raise ValueError("Inputs must be NumPy arrays")
+        
+    if transformation_matrix.shape != (4, 4):
+        raise ValueError("Transformation matrix must be 4x4")
+        
     return cross_generation_mni(ent_tg_native=entry_target, to_mni=transformation_matrix)
 
 
 
-def read_mesh(file_name):
+def read_mesh(file_name: str) -> vtk.vtkPolyData:
+    """
+    Read a mesh from an OBJ file.
+    
+    Args:
+        file_name (str): Path to the OBJ file
+        
+    Returns:
+        vtk.vtkPolyData: The loaded mesh
+        
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        RuntimeError: If the mesh cannot be loaded or is invalid
+    """
+    if not os.path.exists(file_name):
+        raise FileNotFoundError(f"Mesh file not found: {file_name}")
+        
     mesh = vtk.vtkOBJReader()
     mesh.SetFileName(file_name)
     mesh.Update()
-    mesh = mesh.GetOutput()
-    return mesh
+    
+    if mesh.GetOutput().GetNumberOfPoints() == 0:
+        raise RuntimeError(f"Invalid mesh in file: {file_name}")
+        
+    return mesh.GetOutput()
 
 
-def check_points_inside_vtk_mesh(mesh, points):
+def check_points_inside_vtk_mesh(mesh: vtk.vtkPolyData, points: np.ndarray, batch_size: int = 1000) -> np.ndarray:
     """
-    Check if points are inside a VTK mesh.
+    Check if points are inside a VTK mesh using batch processing for better performance.
 
-    Parameters:
-    mesh (vtk.vtkPolyData): The VTK mesh.
-    points (np.ndarray): An array of points.
+    Args:
+        mesh (vtk.vtkPolyData): The VTK mesh
+        points (np.ndarray): Array of points to check, shape (N, 3)
+        batch_size (int): Number of points to process at once
 
     Returns:
-    np.ndarray: An array of booleans indicating whether each point is inside the mesh.
+        np.ndarray: Boolean array indicating whether each point is inside the mesh
+
+    Raises:
+        ValueError: If input points have invalid shape or mesh is invalid
     """
+    if not isinstance(points, np.ndarray) or points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("Points must be a numpy array of shape (N, 3)")
+        
+    if not mesh or mesh.GetNumberOfPoints() == 0:
+        raise ValueError("Invalid or empty mesh provided")
 
-    # Create a vtkPoints object from the numpy array
-    vtk_points = vtk.vtkPoints()
-    for point in points:
-        vtk_points.InsertNextPoint(point)
+    # Process points in batches
+    n_points = points.shape[0]
+    is_inside = np.zeros(n_points, dtype=bool)
+    
+    for i in range(0, n_points, batch_size):
+        batch_end = min(i + batch_size, n_points)
+        batch_points = points[i:batch_end]
+        
+        # Create vtkPoints for the batch
+        vtk_points = vtk.vtkPoints()
+        vtk_points.SetDataTypeToDouble()
+        vtk_points.SetNumberOfPoints(len(batch_points))
+        for j, point in enumerate(batch_points):
+            vtk_points.SetPoint(j, point)
 
-    # Create a vtkPolyData object from the vtkPoints
-    polydata = vtk.vtkPolyData()
-    polydata.SetPoints(vtk_points)
+        # Create polydata for the batch
+        polydata = vtk.vtkPolyData()
+        polydata.SetPoints(vtk_points)
 
-    # Use vtkSelectEnclosedPoints to check if the points are inside the mesh
-    select_enclosed_points = vtk.vtkSelectEnclosedPoints()
-    select_enclosed_points.SetInputData(polydata)
-    select_enclosed_points.SetSurfaceData(mesh)
-    select_enclosed_points.Update()
+        # Check if points are inside
+        select_enclosed_points = vtk.vtkSelectEnclosedPoints()
+        select_enclosed_points.SetInputData(polydata)
+        select_enclosed_points.SetSurfaceData(mesh)
+        select_enclosed_points.Update()
 
-    # Get the output of vtkSelectEnclosedPoints as a numpy array
-    is_inside = np.zeros(points.shape[0], dtype=bool)
-    for i in range(points.shape[0]):
-        is_inside[i] = select_enclosed_points.IsInside(i)
+        # Store results
+        for j in range(len(batch_points)):
+            is_inside[i + j] = select_enclosed_points.IsInside(j)
 
     return is_inside
 
 RATIO = 0.5
 
-def generate_correctly_placed_bitmap(labeled_points, current_output) -> torch.Tensor:
+def generate_correctly_placed_bitmap(labeled_points: np.ndarray, current_output: np.ndarray) -> torch.Tensor:
     """
-    Generates a correctly placed bitmap based on the labeled points and current output.
+    Generate a bitmap indicating correct/incorrect placements using vectorized operations.
 
     Args:
-        labeled_points (numpy.ndarray): Array of labeled points.
-        current_output (numpy.ndarray): Array of current output.
+        labeled_points (np.ndarray): Ground truth labels (1 for inside, 0 for outside)
+        current_output (np.ndarray): Current classification output
 
     Returns:
         torch.Tensor: Tensor representing the correctly placed bitmap.
@@ -265,60 +367,110 @@ def distances_to_mesh(points, mesh_vertices):
 
 @dataclasses.dataclass
 class OptimisationInput:
-
-    mer_data: torch.Tensor # original of electrodes (x,y,z,RMS)
-    in_out: torch.Tensor # in_out values of electrodes (1 inside, 0 outside) output of classifier
-    shift : torch.Tensor # init shift vector
-    scaling: torch.Tensor # init scaling vector
-    mesh: vtk.vtkPolyData # mesh object
-    number_of_electrodes: int # number of electrodes
-    max_shift : float =2
-    min_max_scale : Tuple[float, float] = (1, 1+1e-12)
-
-
+    """
+    A data class representing the input parameters for DBS shift optimization.
+    
+    Attributes:
+        mer_data (torch.Tensor): Original electrode data (x,y,z,RMS)
+        in_out (torch.Tensor): Binary classification of electrodes (1 inside, 0 outside)
+        shift (torch.Tensor): Initial shift vector
+        scaling (torch.Tensor): Initial scaling vector
+        mesh (vtk.vtkPolyData): Target mesh object
+        number_of_electrodes (int): Total number of electrodes
+        max_shift (float): Maximum allowed shift magnitude (default: 2.0)
+        min_max_scale (Tuple[float, float]): Min/max scaling bounds (default: (1, 1+1e-12))
+    """
+    mer_data: torch.Tensor  # original of electrodes (x,y,z,RMS)
+    in_out: torch.Tensor  # in_out values of electrodes (1 inside, 0 outside) output of classifier
+    shift: torch.Tensor  # init shift vector
+    scaling: torch.Tensor  # init scaling vector
+    mesh: vtk.vtkPolyData  # mesh object
+    number_of_electrodes: int  # number of electrodes
+    max_shift: float = 2.0
+    min_max_scale: Tuple[float, float] = (1, 1+1e-12)
 
     def __post_init__(self):
+        """
+        Post-initialization processing to compute electrode direction.
+        """
         orig_points = self.mer_data[:, :3]
         self.electrode_direction = (orig_points[1] - orig_points[0]).detach().numpy()
 
 
-def get_mesh_center(mesh):
+def get_mesh_center(mesh: vtk.vtkPolyData) -> np.ndarray:
     """
-    Get the bounds of a VTK mesh.
-
+    Calculate the center point of a VTK mesh.
+    
     Args:
-        mesh (vtk.vtkPolyData): The VTK mesh.
-
+        mesh (vtk.vtkPolyData): The VTK mesh to process
+        
     Returns:
-        Tuple[float, float, float, float, float, float]: The bounds of the mesh.
+        np.ndarray: A 3D array containing the (x,y,z) coordinates of the mesh center
+        
+    Raises:
+        ValueError: If the mesh is invalid or empty
     """
+    if not mesh or mesh.GetNumberOfPoints() == 0:
+        raise ValueError("Invalid or empty mesh provided")
+        
     bounds = mesh.GetBounds()
-
-    center = [(bounds[0] + bounds[1]) / 2, (bounds[2] + bounds[3]) / 2, (bounds[4] + bounds[5]) / 2]
+    center = np.array([
+        (bounds[0] + bounds[1]) / 2,  # x center
+        (bounds[2] + bounds[3]) / 2,  # y center
+        (bounds[4] + bounds[5]) / 2   # z center
+    ])
     return center
 
-def compute_scaling_transform(mesh, scaling_vector):
-    # Get the centre of the mesh
-    center = get_mesh_center(mesh)  # Ensure get_mesh_center returns a 3-element iterable
+def compute_scaling_transform(mesh: vtk.vtkPolyData, scaling_vector: Union[float, np.ndarray, List[float]]) -> vtk.vtkTransform:
+    """
+    Compute a scaling transformation matrix for a mesh.
+
+    Args:
+        mesh (vtk.vtkPolyData): The mesh to compute the transformation for
+        scaling_vector (Union[float, np.ndarray, List[float]]): Either a single float value for uniform scaling,
+            a 3D numpy array, or a list of 3 floats containing scaling factors for x, y, z
+
+    Returns:
+        vtk.vtkTransform: The computed transformation
+
+    Raises:
+        ValueError: If inputs are invalid
+    """
+    # Convert input to numpy array
+    if isinstance(scaling_vector, (int, float)):
+        scaling_vector = np.array([scaling_vector] * 3)
+    elif isinstance(scaling_vector, list):
+        if len(scaling_vector) != 3:
+            raise ValueError("If scaling_vector is a list, it must contain exactly 3 elements")
+        scaling_vector = np.array(scaling_vector)
+    elif not isinstance(scaling_vector, np.ndarray) or scaling_vector.shape != (3,):
+        raise ValueError("scaling_vector must be either a float, a list of 3 floats, or a 3D numpy array")
+
+    if np.any(scaling_vector <= 0):
+        raise ValueError("Scaling factors must be positive")
+
+    # Get the center of the mesh
+    center = get_mesh_center(mesh)
 
     # Compute the transformation matrices
     decent_matrix = np.eye(4)
-    decent_matrix[:3, 3] = -np.array(center)
+    decent_matrix[:3, 3] = -center
 
     scaling_matrix = np.eye(4)
     scaling_matrix[0, 0] = scaling_vector[0]
     scaling_matrix[1, 1] = scaling_vector[1]
     scaling_matrix[2, 2] = scaling_vector[2]
 
-    # Combine transformations
+    # Combine transformations: first decenter, then scale, then recenter
     res_matrix = np.linalg.inv(decent_matrix) @ scaling_matrix @ decent_matrix
 
-    # Convert NumPy matrix to VTK matrix
+    # Convert to VTK matrix
     vtk_matrix = vtk.vtkMatrix4x4()
     for i in range(4):
         for j in range(4):
             vtk_matrix.SetElement(i, j, res_matrix[i, j])
-    # Create VTK transform
+            
+    # Create and return VTK transform
     vtk_transform = vtk.vtkTransform()
     vtk_transform.SetMatrix(vtk_matrix)
     return vtk_transform
@@ -369,9 +521,20 @@ def optimisation_criterion(orig_points, in_out, shift, scalling, mesh: vtk.vtkPo
     # Now you can extract transformed points
 
     points_inside_posttrans = check_points_inside_vtk_mesh(transformed_mesh, new_points.detach().numpy())
-    #inside_weights = energies * (points_inside_posttrans)  # High-energy points inside
-    #outside_weights =( energies) * (~points_inside_posttrans)  # High-energy points outside
-    weight = generate_correctly_placed_bitmap(in_out, points_inside_posttrans)
+    # Convert in_out to numpy array if it's a torch tensor
+    if isinstance(in_out, torch.Tensor):
+        in_out_np = in_out.detach().numpy()
+    else:
+        in_out_np = np.array(in_out)
+    
+    # Reshape in_out_np to match points_inside_posttrans
+    if in_out_np.shape != points_inside_posttrans.shape:
+        if len(in_out_np.shape) == 2 and in_out_np.shape[1] == 1:
+            in_out_np = in_out_np.ravel()  # Convert (N,1) to (N,)
+        elif len(points_inside_posttrans.shape) == 2 and points_inside_posttrans.shape[1] == 1:
+            points_inside_posttrans = points_inside_posttrans.ravel()
+            
+    weight = generate_correctly_placed_bitmap(in_out_np, points_inside_posttrans)
     if return_weight:
         return ((weight > 0).sum()).item()
     if verbose:
@@ -943,7 +1106,11 @@ def compute_text(classes, distance_to_target, columns):
     d = len(distance_to_target)
     for col in columns:
         for j in range(d):
-            dict_cols[col].append(int(classes[i * d + j][0]))
+            # Handle both scalar and array values
+            if np.isscalar(classes[i * d + j]):
+                dict_cols[col].append(int(classes[i * d + j]))
+            else:
+                dict_cols[col].append(int(classes[i * d + j][0]))
         i += 1
     res = pd.DataFrame(dict_cols)
     res['RecordingSiteDTT'] = distance_to_target
@@ -1937,70 +2104,56 @@ class MRI_MERLogic(ScriptedLoadableModuleLogic):
 
     def predict_shift(self, text_node: "vtkMRMLTextNode", side: bool,
                       to_mni: vtkMRMLLinearTransformNode, mesh: vtk.vtkPolyData,
-                      pcas, lambda1, distance,max_shift = 2.0,scaling_range=(0.8,1.2),
-                      optimiser = None):
+                      pcas, lambda1, distance, max_shift=2.0, scaling_range=(0.8, 1.2),
+                      optimiser=None):
         """
         Predicts the shift for electrode placement based on MER data and mesh.
-
-        Parameters:
-        text_node (vtkMRMLTextNode): The text node containing the MER data.
-        side (bool): Indicates the side (left or right) for the shift prediction.
-        to_mni (vtkMRMLLinearTransformNode): The transform node to MNI space.
-        mesh (vtk.vtkPolyData): The mesh data in MNI space.
-        pcas: Principal component analysis data for the mesh.
-        lambda1: Regularization parameter for the optimization.
-        distance: Distance parameter for the optimization.
-        learning_rate: Learning rate for the optimization.
-        Returns:
-        tuple: A tuple containing the converted transform, text node results, shift result, and text node with wrong labels.
         """
-
-        # print input parameters
-        print("lambda1", lambda1, "distance", distance, "max_shift", max_shift, "scaling_range", scaling_range)
+        # Read and process the text data
         df_text = self.read_leadOR_txt(text_node)
+        df_text = df_text.drop_duplicates(subset=["RecordingSiteDTT"]).copy()  # Create a copy to avoid SettingWithCopyWarning
 
-        df_text = df_text.drop_duplicates(subset=["RecordingSiteDTT"])
-
-
-
-
-        #print(df_text[[x for x in df_text.columns if not x.endswith('XYZ') and x != 'RecordingSiteDTT']])
-
+        # Convert to tensor and get electrode information
         result_tensor, mapping_columns, num_of_elec = self.df_to_electrode_records_tensor(df_text)
-        # note the result tensor is in mni scale and could be mirrored
         unscalled_tensor = result_tensor.clone()
 
-        #result_tensor = self.electrode_records_rescale(result_tensor)
-        #print(result_tensor.shape)
+        # Get electrode names and sort them
+        electrode_names = sorted([x for x in df_text.columns if not x.endswith('XYZ') and x != 'RecordingSiteDTT'])
 
-        #shift = self.predict_initial_shift(result_tensor, pcas)
+        # Classify MER signals
+        classes, rms = self.classify_mers_clean(df_text, num_of_elec)
 
-        #shift = (shift * 20 - 10).detach()
-        electrode_names = [x for x in df_text.columns if not x.endswith('XYZ') and x != 'RecordingSiteDTT']
-        electrode_names = sorted(electrode_names) # use one electrode names sorting for all cases
-
-        # markup_node = convert_tensor_to_markup_node(unscalled_tensor, side)
-        classes,rms = self.classify_mers_clean(df_text, num_of_elec)
-
-        # concatenate the rms to unscalled_tensor
+        # Add RMS values to tensor
         unscalled_tensor = torch.cat((unscalled_tensor, torch.tensor(rms).reshape(-1, 1)), dim=1)
-        #print("unscalled_tensor", unscalled_tensor)
-        shift_result, classes, wrong_labels = self._predict_shift(
-            OptimisationInput(mer_data=unscalled_tensor,
-                              in_out=classes, shift=torch.Tensor([0.0,0.0,0.0]),
-                              scaling=scaling_range, number_of_electrodes=len(electrode_names), mesh=mesh, max_shift=max_shift),
-            lambda1, distance, optimiser = optimiser)
-        print("shift_result after optimisation", shift_result.shift)
-        # reshape wrong labels tensor to same shape as classes
-        wrong_labels = wrong_labels.reshape(classes.shape)
-        text_node_res = compute_text(classes, df_text['RecordingSiteDTT'].values, mapping_columns)
 
+        # Create optimization input
+        opt_input = OptimisationInput(
+            mer_data=unscalled_tensor,
+            in_out=classes,
+            shift=torch.Tensor([0.0, 0.0, 0.0]),
+            scaling=scaling_range,
+            number_of_electrodes=len(electrode_names),
+            mesh=mesh,
+            max_shift=max_shift
+        )
+
+        # Predict shift
+        shift_result, classes, wrong_labels = self._predict_shift(
+            opt_input,
+            lambda1,
+            distance,
+            optimiser=optimiser
+        )
+
+        # Create text nodes for results
+        text_node_res = compute_text(classes, df_text['RecordingSiteDTT'].values, mapping_columns)
         text_node_2 = compute_text(wrong_labels, df_text['RecordingSiteDTT'].values, mapping_columns)
 
-        # logic.remove_previous_shift()
-
-        converted_transform = self.convert_to_slicer_transformation(shift_result,
-                                                                    get_mesh_center(mesh))  # convert to slicer transformation
+        # Convert to slicer transformation
+        converted_transform = self.convert_to_slicer_transformation(
+            shift_result,
+            get_mesh_center(mesh)
+        )
 
         return converted_transform, text_node_res, shift_result, text_node_2
 
