@@ -7,8 +7,8 @@ set(EXTENSION_HOMEPAGE "https://www.slicer.org/wiki/Documentation/Nightly/Extens
 set(EXTENSION_CATEGORY "Netstim")
 set(EXTENSION_CONTRIBUTORS "Igor Varga")
 set(EXTENSION_DESCRIPTION "This is an Extension for DBS coalignment  ")
-set(EXTENSION_ICONURL "https://www.example.com/Slicer/Extensions/slicer_mer_stn.png")
-set(EXTENSION_SCREENSHOTURLS "https://www.example.com/Slicer/Extensions/slicer_mer_stn/Screenshots/1.png")
+set(EXTENSION_ICONURL "https://github.com/IVarha/SlicerDBSCoalignment/blob/21f8e77355647928ca8a84a83815410ced77c186/DBS_STN/Resources/Icons/DBSShiftPrediction.png")
+set(EXTENSION_SCREENSHOTURLS "https://github.com/IVarha/SlicerDBSCoalignment/blob/21f8e77355647928ca8a84a83815410ced77c186/DBS_STN/Resources/Icons/coalignment_screenshot.png")
 set(EXTENSION_DEPENDS "NA") # Specified as a list or "NA" if no dependencies
 
 #-----------------------------------------------------------------------------
