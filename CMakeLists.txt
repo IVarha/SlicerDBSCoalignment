@@ -19,14 +19,12 @@ include(${Slicer_USE_FILE})
 
 #-----------------------------------------------------------------------------
 # Extension modules
-add_subdirectory(DBSShiftPrediction)
 add_subdirectory(STNSegmenter)
 add_subdirectory(LabelConversion)
 add_subdirectory(TextToMarkups)
 add_subdirectory(ShiftCLI)
 add_subdirectory(DBS_STN)
 add_subdirectory(AtlasMapping)
-add_subdirectory(DBS_Settings)
 ## NEXT_MODULE
 
 #-----------------------------------------------------------------------------
