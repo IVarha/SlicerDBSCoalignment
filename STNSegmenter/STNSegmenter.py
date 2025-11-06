@@ -236,6 +236,8 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic = None
         self._parameterNode = None
         self._parameterNodeGuiTag = None
+        self.t1_node: Optional[vtkMRMLScalarVolumeNode] = None
+        self.t2_node: Optional[vtkMRMLScalarVolumeNode] = None
 
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -270,12 +272,19 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.wmIntensityNormButton.clicked.connect(self.onApplyIntensity)
         self.ui.twoStepCoregistrationButton.clicked.connect(self.onTwoStepCoregistration)
         self.ui.segmentationButton.clicked.connect(self.onSegmentationButtonClicked)
+        self.ui.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)",
+                                      lambda node, name="t1_node": self.onVolumeSelect(node, name))
+        self.ui.t2inputSelector.connect("currentNodeChanged(vtkMRMLNode*)",
+                                        lambda node, name="t2_node": self.onVolumeSelect(node, name))
 
         self.ui.twoStepCoregistrationDropdown.currentTextChanged.connect(self.onMNIRegistrationMethodChanged)
         self.selectedMNIRegistrationMethod = "Rigid" 
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
+        # Populate cached node references if selectors already have a node
+        self.onVolumeSelect(self.ui.inputSelector.currentNode(), "t1_node")
+        self.onVolumeSelect(self.ui.t2inputSelector.currentNode(), "t2_node")
 
     def onMNIRegistrationMethodChanged(self, method: str):
         """
