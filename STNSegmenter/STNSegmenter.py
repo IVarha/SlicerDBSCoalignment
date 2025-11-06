@@ -23,17 +23,14 @@ except ImportError:
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
 
 
-if sys.platform == 'win32':
-    try:
-        import ants
-        import antspynet
-    except ImportError:
-        slicer.util.pip_install('tensorflow==2.14.0')
-        slicer.util.pip_install('tensorflow-estimator==2.11.0')
-
-        slicer.util.pip_install('tensorflow-probability==0.22.1')
-        slicer.util.pip_install('keras==2.10.0')
-        slicer.util.pip_install('antspyx')
+try:
+    import ants
+    import antstorch
+except ImportError:
+    slicer.util.pip_install('ants')
+    slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
+    import antstorch
+    import ants
 
 import numpy as np
 import qt
@@ -275,11 +272,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.segmentationButton.clicked.connect(self.onSegmentationButtonClicked)
 
         self.ui.twoStepCoregistrationDropdown.currentTextChanged.connect(self.onMNIRegistrationMethodChanged)
-
-        self.ui.t2inputSelector.currentNodeChanged.connect(lambda x: self.onVolumeSelect(x, "t2_node"))
-        self.ui.inputSelector.currentNodeChanged.connect(lambda x: self.onVolumeSelect(x, "t1_node"))
-        self.t1_node = None
-        self.t2_node = None
+        self.selectedMNIRegistrationMethod = "Rigid" 
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
@@ -344,20 +337,12 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            if sys.platform == 'win32':
-                slicer.util.pip_install('antspyx')
-                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
 
-        if sys.platform == 'win32':
-            slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
+        slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
                                                  out_folder=self.temp_workdir.name)
-        else:
-            import DBS_Settings
-            pyth = DBS_Settings.PythonExeDBSPath().getValue()
-            slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
-                                                 out_folder=self.temp_workdir.name, pyth=pyth)
 
         self.wm_seg_done = True
         print("fin on appl")
@@ -626,27 +611,14 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         image_name = t1.GetFileName()
         mask_filename = str(Path(temp_dir_path) / "t1_mask.nii.gz")
 
-        if sys.platform == 'win32':
 
-            img = ants.image_read(image_name)
+        img = ants.image_read(image_name)
 
-            mask = antspynet.brain_extraction(img, "t1") > 0.8
-            masked_image = img * mask
-            ants.image_write(mask, mask_filename)
-            ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
-        elif sys.platform == 'darwin':
-            import DBS_Settings
-            pyth = DBS_Settings.PythonExeDBSPath().getValue()
-            cmd = f"{pyth} -c 'import antspynet;import ants;from pathlib import Path;"
-            cmd += f"img=ants.image_read(\"{image_name}\");"
-            cmd += f"mask=antspynet.brain_extraction(img, \"t1\") > 0.8;"
-            cmd += f"masked_image=img*mask;"
-            cmd += f"ants.image_write(mask, \"{mask_filename}\");"
-            cmd += f"ants.image_write(masked_image, \"{str(Path(temp_dir_path) / 't1.nii.gz')}\")'"
+        mask = antstorch.brain_extraction(img, "t1") > 0.8
+        masked_image = img * mask
+        ants.image_write(mask, mask_filename)
+        ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
 
-            print(cmd)
-            cmd = shlex.split(cmd)
-            subprocess.check_output(cmd,env={})
 
         print("FINISHED EXTRACTOR")
         # cmd = [sys.executable, self.resourcePath("py/bet.py"), str(image_name), mask_filename, str(Path(temp_dir_path) / "t1.nii.gz")]
@@ -661,9 +633,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            if sys.platform == 'win32':
-                slicer.util.pip_install('antspyx')
-                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
@@ -690,9 +660,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            if sys.platform == 'win32':
-                slicer.util.pip_install('antspyx')
-                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
@@ -720,9 +688,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            if sys.platform == 'win32':
-                slicer.util.pip_install('antspyx')
-                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
@@ -785,9 +751,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            if sys.platform == 'win32':
-                slicer.util.pip_install('antspyx')
-                slicer.util.pip_install('antspynet')
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
@@ -842,6 +806,15 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         mesh = read_mesh(self.resourcePath('nets/3.obj'))
         mm_offset = 2
         # t2 = slicer.util.getNode("t2_normalised")
+        try:
+            from segm_lib.image_utils import SlicerImage
+        except ImportError:
+            slicer.util.pip_install(r'nibabel')
+            slicer.util.pip_install('intensity-normalization')
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
+            slicer.util.pip_install('dbs-image-utils')
+            from segm_lib.image_utils import SlicerImage
+
         image_processor = SlicerImage(t2.GetImageData())
 
         transform_ras_to_ijk = vtk.vtkMatrix4x4()

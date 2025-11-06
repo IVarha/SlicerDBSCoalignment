@@ -5,7 +5,7 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
-from intensity_normalization.cli.fcm import fcm_main
+from intensity_normalization.cli import main as intensity_cli_main
 
 
 def _run_cli_wm_segmentation(t1, out_folder):
@@ -67,13 +67,32 @@ def intensity_normalisation(out_folder):
     works with out_folder/coreg_t2.nii.gz
     """
     file_name = "t2_normalised.nii.gz"
-    t2_file = Path(out_folder) / "coreg_t2.nii.gz"
-    wm_mask = str(Path(out_folder) / "wm_mask.nii.gz")
+    t2_path = Path(out_folder) / "coreg_t2.nii.gz"
+    output_path = Path(out_folder) / file_name
+    wm_mask_path = Path(out_folder) / "wm_mask.nii.gz"
 
+    run_wm_slab_creation = [
+        "intensity-normalization",
+        "fcm",
+        str(t2_path),
+        "--output",
+        str(output_path),
+        "--modality",
+        "t2",
+        "--tissue-type",
+        "wm",
+        "--verbose",
+    ]
 
-    run_wm_slab_creation = ["fcm-normalize", str(t2_file),"-tm", wm_mask, "-o",str(Path(out_folder) / file_name), "-mo", "t2", "-v"]
-    sys.argv = run_wm_slab_creation
-    fcm_main()
+    if wm_mask_path.exists():
+        run_wm_slab_creation.extend(["--mask", str(wm_mask_path)])
+
+    old_argv = sys.argv
+    try:
+        sys.argv = run_wm_slab_creation
+        intensity_cli_main()
+    finally:
+        sys.argv = old_argv
 
 
 def elastix_registration(ref_image,

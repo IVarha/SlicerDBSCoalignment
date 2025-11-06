@@ -5,7 +5,7 @@ import subprocess
 import shlex
 import nibabel as nib
 import numpy as np
-from intensity_normalization.cli.fcm import fcm_main
+from intensity_normalization.cli import main as intensity_cli_main
 import sys
 
 
@@ -46,20 +46,15 @@ def wm_segmentation(t1, out_folder,pyth=None):
     """
     print(t1)
 
+    import antstorch
+    import ants
+    t1_image = ants.image_read(t1)
+    res = antstorch.deep_atropos([t1_image,None,None], verbose=True)
+    si = res['segmentation_image']
+    wm = (si == 3) or (si == 4) or (si == 5)
 
-    if sys.platform == 'win32':
-        import antspynet
-        import ants
-        t1_image = ants.image_read(t1)
-        res = antspynet.deep_atropos(t1_image, verbose=True)
-
-        si = res['segmentation_image']
-        wm = (si == 3) or (si == 4) or (si == 5)
-
-        wm_file = str(Path(out_folder) / "wm_mask.nii.gz")
-        ants.image_write(wm, wm_file)
-    elif sys.platform == 'darwin':
-        res = _run_cli_wm_segmentation(t1, out_folder,pyth)
+    wm_file = str(Path(out_folder) / "wm_mask.nii.gz")
+    ants.image_write(wm, wm_file)
 
 
 
@@ -82,20 +77,39 @@ def binarise_threshold(filename, threshold, save_filename):
     nib.save(new_nifti_img, save_filename)
 
 
-def intensity_normalisation(out_folder,t2_file):
+def intensity_normalisation(out_folder, t2_file):
     """
     Script for intensity normalisation
     works with out_folder/coreg_t2.nii.gz
     """
     file_name = "t2_normalised.nii.gz"
-    #t2_file = str(Path(out_folder) / "coreg_t2.nii.gz")
-    wm_mask = str(Path(out_folder) / "wm_mask.nii.gz")
+    output_path = Path(out_folder) / file_name
+    t2_path = Path(t2_file)
+    wm_mask_path = Path(out_folder) / "wm_mask.nii.gz"
 
-    run_wm_slab_creation = ["fcm-normalize", t2_file, "-tm", wm_mask, "-o", str(Path(out_folder) / file_name), "-mo",
-                            "t2", "-v"]
+    run_wm_slab_creation = [
+        "intensity-normalization",
+        "fcm",
+        str(t2_path),
+        "--output",
+        str(output_path),
+        "--modality",
+        "t2",
+        "--tissue-type",
+        "wm",
+        "--verbose",
+    ]
 
-    sys.argv = run_wm_slab_creation
-    fcm_main()
+    if wm_mask_path.exists():
+        run_wm_slab_creation.extend(["--mask", str(wm_mask_path)])
+
+    old_argv = sys.argv
+    try:
+        sys.argv = run_wm_slab_creation
+        intensity_cli_main()
+    finally:
+        sys.argv = old_argv
+
 
 
 def elastix_registration_cmd(ref_image,
