@@ -534,7 +534,16 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         # load segmentation model
         self.shape_histogram = _read_pickle(self.resourcePath('nets/shape_hist.pkl'))
         net = CenterAndPCANet(self.shape_pca_res[1])
-        cd_state_dict = torch.load(self.resourcePath('nets/shp_pred.pt'), map_location=torch.device('cpu'))
+        shape_weights_path = Path(self.resourcePath('nets/shp_pred.pt'))
+        if not shape_weights_path.exists():
+            shape_weights_path.parent.mkdir(parents=True, exist_ok=True)
+            success = slicer.util.downloadFile(
+                "https://github.com/IVarha/SlicerDBSCoalignment/releases/download/0.0.1/shp_pred.pt",
+                str(shape_weights_path),
+            )
+            if not success:
+                raise RuntimeError("Failed to download STN shape predictor weights")
+        cd_state_dict = torch.load(str(shape_weights_path), map_location=torch.device('cpu'))
         net.load_state_dict(cd_state_dict)
         self.shape_predictor = net
 
