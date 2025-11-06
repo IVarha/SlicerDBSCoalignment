@@ -674,13 +674,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
 
-        if sys.platform == 'win32':
-            slicer_preprocessing.wm_segmentation(t1, out_folder)
-        else:
-            import DBS_Settings
-            pyth = DBS_Settings.PythonExeDBSPath().getValue()
-            slicer_preprocessing.wm_segmentation(t1, out_folder,pyth)
-
+        slicer_preprocessing.wm_segmentation(t1, out_folder)
 
     def _get_elastix_executable(self):
         import Elastix
