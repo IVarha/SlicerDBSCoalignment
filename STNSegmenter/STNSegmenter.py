@@ -28,7 +28,7 @@ try:
     import antstorch
 except ImportError:
     slicer.util.pip_install('ants')
-    slicer.util.pip_install("antstorch")
+    slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
     import antstorch
     import ants
 
@@ -346,7 +346,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install("antstorch")
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
 
@@ -651,7 +651,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install("antstorch")
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
@@ -678,7 +678,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install("antstorch")
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
@@ -700,7 +700,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install("antstorch")
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
@@ -763,7 +763,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install("antstorch")
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib import slicer_preprocessing
             from segm_lib.image_utils import SlicerImage
@@ -823,7 +823,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         except ImportError:
             slicer.util.pip_install(r'nibabel')
             slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install("antstorch")
+            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
             slicer.util.pip_install('dbs-image-utils')
             from segm_lib.image_utils import SlicerImage
 
