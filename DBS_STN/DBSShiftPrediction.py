@@ -54,6 +54,8 @@ from slicer.parameterNodeWrapper import (
 )
 from slicer.util import VTKObservationMixin
 
+import Lib
+import Lib.mer_support
 from Lib import slicer_preprocessing
 from Lib.mer_support import cross_generation_mni, ElectrodeRecord, \
     extract_points_from_mesh
