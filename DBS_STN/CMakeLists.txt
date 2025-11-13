@@ -2,14 +2,22 @@
 set(MODULE_NAME DBSShiftPrediction)
 
 #-----------------------------------------------------------------------------
+# Install the main scripted module and your package files (preserving paths)
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
-  )
+
+  Lib/__init__.py
+  Lib/mer_support.py
+  Lib/slicer_preprocessing.py
+  Lib/image_utils.py
+  Lib/utils_file.py
+  Lib/visualisation.py
+)
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
   Resources/UI/${MODULE_NAME}.ui
-  )
+)
 
 #-----------------------------------------------------------------------------
 slicerMacroBuildScriptedModule(
@@ -17,15 +25,10 @@ slicerMacroBuildScriptedModule(
   SCRIPTS ${MODULE_PYTHON_SCRIPTS}
   RESOURCES ${MODULE_PYTHON_RESOURCES}
   WITH_GENERIC_TESTS
-  )
+)
 
 #-----------------------------------------------------------------------------
 if(BUILD_TESTING)
-
-  # Register the unittest subclass in the main script as a ctest.
-  # Note that the test will also be available at runtime.
   slicer_add_python_unittest(SCRIPT ${MODULE_NAME}.py)
-
-  # Additional build-time testing
   add_subdirectory(Testing)
 endif()
