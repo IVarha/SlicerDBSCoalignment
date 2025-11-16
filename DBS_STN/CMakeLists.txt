@@ -11,7 +11,6 @@ set(MODULE_PYTHON_SCRIPTS
   Lib/slicer_preprocessing.py
   Lib/image_utils.py
   Lib/utils_file.py
-  Lib/visualisation.py
 )
 
 set(MODULE_PYTHON_RESOURCES

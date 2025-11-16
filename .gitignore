@@ -1,0 +1,43 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+_build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# Logs and local data
+*.log
+*.tmp
+*.bak
+
+# IDE settings
+.idea/
+.vscode/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# CMake build artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake-build*/
+compile_commands.json
+
+# Tooling outputs
+Testing/Temporary/
