@@ -22,7 +22,7 @@ from slicer import vtkMRMLScalarVolumeNode
 from vtkSegmentationCorePython import vtkSegmentation
 from vtkmodules.vtkCommonDataModel import vtkImageData
 
-from DBS_STN.Lib.image_utils import SlicerImage
+from Lib.image_utils import SlicerImage
 
 
 #
