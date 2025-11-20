@@ -17,6 +17,7 @@ set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
   Resources/UI/${MODULE_NAME}.ui
   Resources/nets/net_transformer.pt
+  Resources/nets/mer_pca_mesh.pkl
 )
 
 #-----------------------------------------------------------------------------
