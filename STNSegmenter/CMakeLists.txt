@@ -11,6 +11,11 @@ set(MODULE_PYTHON_RESOURCES
   Resources/UI/${MODULE_NAME}.ui
   # nets
   Resources/nets/cent_detect_hist.pkl
+  Resources/nets/cent_pred.pt
+  Resources/nets/mer_pca_mesh.pkl
+  Resources/nets/shape_hist.pkl
+  Resources/nets/shape_pcas.pkl
+  Resources/nets/stn_shape_mask.pkl
   )
 
 #-----------------------------------------------------------------------------

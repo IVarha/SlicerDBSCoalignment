@@ -16,6 +16,7 @@ set(MODULE_PYTHON_SCRIPTS
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
   Resources/UI/${MODULE_NAME}.ui
+  Resources/nets/net_transformer.pt
 )
 
 #-----------------------------------------------------------------------------
