@@ -304,22 +304,6 @@
    </hints>
   </connection>
 
-<connection>
-   <sender>twoStepCoregistrationDropdown</sender>
-   <signal>currentTextChanged(QString)</signal>
-   <receiver>STNSegmenter</receiver>
-   <slot>onMNIRegistrationMethodChanged(QString)</slot>
-   <hints>
-      <hint type="sourcelabel">
-         <x>120</x>
-         <y>200</y>
-      </hint>
-      <hint type="destinationlabel">
-         <x>150</x>
-         <y>250</y>
-      </hint>
-   </hints>
-</connection>
   <connection>
    <sender>STNSegmenter</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>

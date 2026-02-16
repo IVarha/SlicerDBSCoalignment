@@ -9,7 +9,10 @@ set(MODULE_PYTHON_SCRIPTS
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
   Resources/UI/${MODULE_NAME}.ui
+  Resources/MNI/MNI152_T1_1mm_brain.nii.gz
+  Resources/MNI/MNI152_T1_1mm_subbr_mask.nii.gz
   # nets
+  Resources/nets/3.obj
   Resources/nets/cent_detect_hist.pkl
   Resources/nets/cent_pred.pt
   Resources/nets/mer_pca_mesh.pkl

@@ -2,8 +2,6 @@
 
 import sys
 
-import DBSShiftPrediction
-
 def main(input, sigma, output):
     import SimpleITK as sitk
 

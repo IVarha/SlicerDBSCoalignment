@@ -97,6 +97,61 @@ def _compute_min_max_scaler(pt_min, pt_max):
     return a
 
 
+def _looks_like_git_lfs_pointer(file_path: Path) -> bool:
+    if not file_path.exists() or file_path.stat().st_size > 1024:
+        return False
+    with open(file_path, "rb") as f:
+        head = f.read(256)
+    return b"git-lfs.github.com/spec" in head
+
+
+def _load_torch_state_dict(
+        file_path: Path,
+        download_url: Optional[str] = None,
+        model_name: str = "model") -> dict:
+    def _download_weights() -> None:
+        if not download_url:
+            raise RuntimeError(
+                f"Cannot auto-download weights for {model_name}; missing download URL."
+            )
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = file_path.with_suffix(file_path.suffix + ".download")
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        success = slicer.util.downloadFile(download_url, str(tmp_path))
+        if not success:
+            raise RuntimeError(f"Failed to download weights for {model_name} from {download_url}")
+        if not tmp_path.exists() or tmp_path.stat().st_size == 0:
+            raise RuntimeError(f"Downloaded empty weights file for {model_name} from {download_url}")
+        tmp_path.replace(file_path)
+
+    if not file_path.exists() or _looks_like_git_lfs_pointer(file_path):
+        _download_weights()
+
+    try:
+        return torch.load(str(file_path), map_location=torch.device('cpu'))
+    except Exception as first_error:
+        if not download_url:
+            raise RuntimeError(
+                f"Failed loading {model_name} weights from {file_path}: {first_error}"
+            ) from first_error
+        logging.warning("Failed loading %s weights from %s, re-downloading", model_name, file_path)
+        try:
+            if file_path.exists():
+                file_path.unlink()
+        except OSError:
+            pass
+        _download_weights()
+        try:
+            return torch.load(str(file_path), map_location=torch.device('cpu'))
+        except Exception as second_error:
+            raise RuntimeError(
+                f"Failed loading {model_name} weights after re-download: {second_error}"
+            ) from second_error
+
 
 
 
@@ -238,6 +293,10 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._parameterNodeGuiTag = None
         self.t1_node: Optional[vtkMRMLScalarVolumeNode] = None
         self.t2_node: Optional[vtkMRMLScalarVolumeNode] = None
+        self.transform_node: Optional[vtkMRMLTransformNode] = None
+        self.wm_seg_done = False
+        self.intensity_normalisation_done = False
+        self.selectedMNIRegistrationMethod = "Rigid"
 
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -254,10 +313,12 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # "setMRMLScene(vtkMRMLScene*)" slot.
         uiWidget.setMRMLScene(slicer.mrmlScene)
 
+        self._create_temp_folder()
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
-        self.logic = STNSegmenterLogic()
-        self._create_temp_folder()
+        # Keep setup resilient: if initialization fails, handlers stay connected and we show
+        # a concrete error on first action instead of appearing unresponsive.
+        self._ensureLogic(show_errors=False)
         # Connections
 
         # These connections ensure that we update parameter node when scene is closed
@@ -266,22 +327,25 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Buttons
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
-        self.ui.preprocessingButton.clicked.connect(self.onApplyPreprocessing)
-        self.ui.betButton.clicked.connect(self.brain_extraction)
-        self.ui.wmSegmentationButton.clicked.connect(self.onApplyWMSeg)
-        self.ui.wmIntensityNormButton.clicked.connect(self.onApplyIntensity)
-        self.ui.twoStepCoregistrationButton.clicked.connect(self.onTwoStepCoregistration)
-        self.ui.segmentationButton.clicked.connect(self.onSegmentationButtonClicked)
+        self.ui.preprocessingButton.connect("clicked(bool)", self.onApplyPreprocessing)
+        self.ui.betButton.connect("clicked(bool)", self.brain_extraction)
+        self.ui.wmSegmentationButton.connect("clicked(bool)", self.onApplyWMSeg)
+        self.ui.wmIntensityNormButton.connect("clicked(bool)", self.onApplyIntensity)
+        self.ui.twoStepCoregistrationButton.connect("clicked(bool)", self.onTwoStepCoregistration)
+        self.ui.segmentationButton.connect("clicked(bool)", self.onSegmentationButtonClicked)
         self.ui.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)",
                                       lambda node, name="t1_node": self.onVolumeSelect(node, name))
         self.ui.t2inputSelector.connect("currentNodeChanged(vtkMRMLNode*)",
                                         lambda node, name="t2_node": self.onVolumeSelect(node, name))
 
-        self.ui.twoStepCoregistrationDropdown.currentTextChanged.connect(self.onMNIRegistrationMethodChanged)
-        self.selectedMNIRegistrationMethod = "Rigid" 
+        self.ui.twoStepCoregistrationDropdown.connect("currentTextChanged(QString)", self.onMNIRegistrationMethodChanged)
+        dropdown_value = self.ui.twoStepCoregistrationDropdown.currentText
+        if dropdown_value:
+            self.selectedMNIRegistrationMethod = str(dropdown_value)
 
         # Make sure parameter node is initialized (needed for module reload)
-        self.initializeParameterNode()
+        if self.logic:
+            self.initializeParameterNode()
         # Populate cached node references if selectors already have a node
         self.onVolumeSelect(self.ui.inputSelector.currentNode(), "t1_node")
         self.onVolumeSelect(self.ui.t2inputSelector.currentNode(), "t2_node")
@@ -304,24 +368,49 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.temp_workdir = tempfile.TemporaryDirectory()
         print(self.temp_workdir.name)
 
+    def _ensureLogic(self, show_errors=True) -> bool:
+        if self.logic:
+            return True
+        try:
+            self.logic = STNSegmenterLogic()
+            return True
+        except Exception as exc:
+            logging.exception("Failed to initialize STNSegmenter logic")
+            self.logic = None
+            if show_errors:
+                slicer.util.errorDisplay(f"Failed to initialize STNSegmenter logic:\n{exc}")
+            return False
+
+    def _requireVolume(self, volume_node: Optional[vtkMRMLScalarVolumeNode], volume_name: str) -> bool:
+        if volume_node is not None:
+            return True
+        slicer.util.errorDisplay(f"Select a {volume_name} volume first.")
+        return False
+
     def onApplyPreprocessing(self) -> None:
-        print("start on appl")
+        if not self._ensureLogic():
+            return
+        if not self._requireVolume(self.t1_node, "T1"):
+            return
+        if not self._requireVolume(self.t2_node, "T2"):
+            return
+        with slicer.util.tryWithErrorDisplay(_("Failed to coregister T2 to structural image."), waitCursor=True):
+            print("start on appl")
+            sn1 = check_storage_node(self.t1_node, self.temp_workdir)
+            sn2 = check_storage_node(self.t2_node, self.temp_workdir)
+            print(sn1.GetFileName())
+            print(sn2.GetFileName())
 
-        sn1 = check_storage_node(self.t1_node, self.temp_workdir)
-        sn2 = check_storage_node(self.t2_node, self.temp_workdir)
-        print(sn1.GetFileName())
-        print(sn2.GetFileName())
+            self.logic.coregistration_t2_t1(sn1
+                                            , t2=sn2,
+                                            out_name=str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
 
-        self.logic.coregistration_t2_t1(sn1
-                                        , t2=sn2,
-                                        out_name=str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
-
-        # load t2 coregistered image
-        t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
-        self.ui.t2inputSelector.currentNodeChanged(t2_node)
-        print(self.t2_node.GetName())
-        self.popup_window()
-        print("fin on appl")
+            # load t2 coregistered image
+            t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "coreg_t2.nii.gz"))
+            self.ui.t2inputSelector.setCurrentNode(t2_node)
+            self.onVolumeSelect(t2_node, "t2_node")
+            self.popup_window()
+            print("fin on appl")
 
     def popup_window(self):
         message_box = qt.QMessageBox()
@@ -340,77 +429,96 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         message_box.exec_()
 
     def onApplyWMSeg(self) -> None:
-        print("start on onApplyWMSeg")
-        try:
-            from segm_lib import slicer_preprocessing
-        except ImportError:
-            slicer.util.pip_install(r'nibabel')
-            slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
-            slicer.util.pip_install('dbs-image-utils')
-            from segm_lib import slicer_preprocessing
+        t1_path = Path(self.temp_workdir.name) / "t1.nii.gz"
+        if not t1_path.exists():
+            slicer.util.errorDisplay("Run Brain Extraction first to generate a preprocessed T1 image.")
+            return
+        with slicer.util.tryWithErrorDisplay(_("Failed to compute white matter segmentation."), waitCursor=True):
+            print("start on onApplyWMSeg")
+            try:
+                from segm_lib import slicer_preprocessing
+            except ImportError:
+                slicer.util.pip_install(r'nibabel')
+                slicer.util.pip_install('intensity-normalization')
+                slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
+                slicer.util.pip_install('dbs-image-utils')
+                from segm_lib import slicer_preprocessing
 
-        slicer_preprocessing.wm_segmentation(t1=str(Path(self.temp_workdir.name) / "t1.nii.gz"),
-                                                 out_folder=self.temp_workdir.name)
-
-        self.wm_seg_done = True
-        print("fin on appl")
+            slicer_preprocessing.wm_segmentation(t1=str(t1_path),
+                                                     out_folder=self.temp_workdir.name)
+            self.wm_seg_done = True
+            print("fin on appl")
 
     def onApplyIntensity(self):
-        print("test onApplyIntensity")
-
-        if self.wm_seg_done:
-            print(check_storage_node(self.t2_node, self.temp_workdir).GetFileName())
-            self.logic.intensity_normalisation(self.temp_workdir.name,t2_file_name= check_storage_node(self.t2_node, self.temp_workdir).GetFileName())
+        if not self._ensureLogic():
+            return
+        if not self._requireVolume(self.t2_node, "T2"):
+            return
+        if not self.wm_seg_done:
+            slicer.util.errorDisplay("Run WM segmentation before intensity normalization.")
+            return
+        with slicer.util.tryWithErrorDisplay(_("Failed to normalize T2 intensity."), waitCursor=True):
+            print("test onApplyIntensity")
+            t2_storage = check_storage_node(self.t2_node, self.temp_workdir).GetFileName()
+            print(t2_storage)
+            self.logic.intensity_normalisation(self.temp_workdir.name, t2_file_name=t2_storage)
             self.intensity_normalisation_done = True
             t2_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t2_normalised.nii.gz"))
-            self.ui.t2inputSelector.currentNodeChanged(t2_node)
-
-            pass
-        self.popup_window()
+            self.ui.t2inputSelector.setCurrentNode(t2_node)
+            self.onVolumeSelect(t2_node, "t2_node")
+            self.popup_window()
 
     def onTwoStepCoregistration(self):
-        print("test onTwoStepCoregustration " + self.selectedMNIRegistrationMethod )
-
-        self.transform_node = self.logic.two_step_coregistration(self.t2_node, self.temp_workdir.name,method=self.selectedMNIRegistrationMethod)
-        self.transform_node.SetName("to_mni")
+        if not self._ensureLogic():
+            return
+        if not self._requireVolume(self.t2_node, "T2"):
+            return
+        with slicer.util.tryWithErrorDisplay(_("Failed to coregister to MNI."), waitCursor=True):
+            print("test onTwoStepCoregustration " + self.selectedMNIRegistrationMethod)
+            self.transform_node = self.logic.two_step_coregistration(
+                self.t2_node,
+                self.temp_workdir.name,
+                method=self.selectedMNIRegistrationMethod,
+            )
+            self.transform_node.SetName("to_mni")
 
     def apply_normalization(self, shape_im):
         shape_im = self.shape_histogram.apply_normalization(shape_im)
         return shape_im
 
     def brain_extraction(self):
-
-        self.logic.brain_extraction(check_storage_node(self.t1_node, self.temp_workdir), self.temp_workdir.name)
-
-        t1_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t1.nii.gz"))
-
-        self.ui.inputSelector.currentNodeChanged(t1_node)
+        if not self._ensureLogic():
+            return
+        if not self._requireVolume(self.t1_node, "T1"):
+            return
+        with slicer.util.tryWithErrorDisplay(_("Failed to run brain extraction."), waitCursor=True):
+            self.logic.brain_extraction(check_storage_node(self.t1_node, self.temp_workdir), self.temp_workdir.name)
+            t1_node = loadNiiImage(str(Path(self.temp_workdir.name) / "t1.nii.gz"))
+            self.ui.inputSelector.setCurrentNode(t1_node)
+            self.onVolumeSelect(t1_node, "t1_node")
 
     def onSegmentationButtonClicked(self):
+        if not self._ensureLogic():
+            return
+        if not self._requireVolume(self.t2_node, "T2"):
+            return
+        if self.transform_node is None:
+            slicer.util.errorDisplay("Run 'Coregistration to MNI' before STN segmentation.")
+            return
+        with slicer.util.tryWithErrorDisplay(_("Failed to segment STNs."), waitCursor=True):
+            print("Starting segmentation")
 
-        print("Starting segmentation")
+            left, right = self.logic.segmentSTNs(self.t2_node)
 
-        left, right = self.logic.segmentSTNs(self.t2_node)
+            # invert tranform node
+            inverted_transform = slicer.mrmlScene.CopyNode(self.transform_node)
+            inverted_transform.SetName("to_mni_inverted")
+            inverted_transform.Inverse()
 
-        ## add mni^-1 transformation to the mesh nodes
-
-
-
-        # invert tranform node
-
-        inverted_transform = slicer.mrmlScene.CopyNode(self.transform_node)
-
-        inverted_transform.SetName("to_mni_inverted")
-        inverted_transform.Inverse()
-
-
-        slicer.mrmlScene.AddNode(inverted_transform)
-        # inverted_transform.SetMatrixTransformToParent(self.transform_node.GetMatrixTransformToParent())
-
-        left[0].SetAndObserveTransformNodeID(inverted_transform.GetID())
-        right[0].SetAndObserveTransformNodeID(inverted_transform.GetID())
-        self.t2_node.SetAndObserveTransformNodeID(inverted_transform.GetID())
+            slicer.mrmlScene.AddNode(inverted_transform)
+            left[0].SetAndObserveTransformNodeID(inverted_transform.GetID())
+            right[0].SetAndObserveTransformNodeID(inverted_transform.GetID())
+            self.t2_node.SetAndObserveTransformNodeID(inverted_transform.GetID())
 
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
@@ -444,6 +552,8 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Ensure parameter node exists and observed."""
         # Parameter node stores all user choices in parameter values, node selections, etc.
         # so that when the scene is saved and reloaded, these settings are restored.
+        if not self._ensureLogic(show_errors=False):
+            return
 
         self.setParameterNode(self.logic.getParameterNode())
 
@@ -532,7 +642,10 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         self.processing_folder = None
         self.center_detector_scaller = _compute_min_max_scaler(self.det_mask.min_p, self.det_mask.max_p)
         net = CenterDetector().to('cpu')
-        cd_state_dict = torch.load(self.resourcePath('nets/cent_pred.pt'), map_location=torch.device('cpu'))
+        cd_state_dict = _load_torch_state_dict(
+            Path(self.resourcePath('nets/cent_pred.pt')),
+            model_name="center predictor",
+        )
         net.load_state_dict(cd_state_dict)
         self.center_detector = net
 
@@ -544,15 +657,11 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         self.shape_histogram = _read_pickle(self.resourcePath('nets/shape_hist.pkl'))
         net = CenterAndPCANet(self.shape_pca_res[1])
         shape_weights_path = Path(self.resourcePath('nets/shp_pred.pt'))
-        if not shape_weights_path.exists():
-            shape_weights_path.parent.mkdir(parents=True, exist_ok=True)
-            success = slicer.util.downloadFile(
-                "https://github.com/IVarha/SlicerDBSCoalignment/releases/download/0.0.1/shp_pred.pt",
-                str(shape_weights_path),
-            )
-            if not success:
-                raise RuntimeError("Failed to download STN shape predictor weights")
-        cd_state_dict = torch.load(str(shape_weights_path), map_location=torch.device('cpu'))
+        cd_state_dict = _load_torch_state_dict(
+            shape_weights_path,
+            download_url="https://github.com/IVarha/SlicerDBSCoalignment/releases/download/0.0.1/shp_pred.pt",
+            model_name="shape predictor",
+        )
         net.load_state_dict(cd_state_dict)
         self.shape_predictor = net
 
@@ -632,7 +741,46 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
 
         img = ants.image_read(image_name)
 
-        mask = antstorch.brain_extraction(img, "t1") > 0.8
+        try:
+            # Use a per-run cache to avoid corrupt global ANTsTorch caches.
+            try:
+                from antstorch.utilities.get_antstorch_data import set_antstorch_cache_directory
+
+                cache_dir = Path(temp_dir_path) / "antstorch_cache"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                set_antstorch_cache_directory(str(cache_dir))
+            except Exception:
+                pass
+            mask = antstorch.brain_extraction(img, "t1") > 0.8
+        except EOFError as e:
+            # Corrupted cached weights can trigger EOFError during torch.load.
+            try:
+                import os
+                import shutil
+                from antstorch.utilities.get_pretrained_network import get_pretrained_network
+
+                # Clear the per-run cache if present.
+                try:
+                    cache_dir = Path(temp_dir_path) / "antstorch_cache"
+                    if cache_dir.exists():
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+                weights_file = get_pretrained_network(
+                    "brainExtractionRobustT1_pytorch",
+                    target_file_name="brainExtractionRobustT1_pytorch.pt",
+                )
+                if os.path.exists(weights_file):
+                    os.remove(weights_file)
+            except Exception:
+                raise RuntimeError(
+                    "ANTsTorch brain extraction failed while handling a corrupted weights cache. "
+                    "Delete the cached weights in %USERPROFILE%\\.antstorch and retry."
+                ) from e
+
+            # Retry once after clearing the cached weights.
+            mask = antstorch.brain_extraction(img, "t1") > 0.8
         masked_image = img * mask
         ants.image_write(mask, mask_filename)
         ants.image_write(masked_image, str(Path(temp_dir_path) / "t1.nii.gz"))
