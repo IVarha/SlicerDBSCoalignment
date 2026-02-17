@@ -14,8 +14,6 @@ from slicer.parameterNodeWrapper import (
     parameterNodeWrapper,
     WithinRange,
 )
-import DBSShiftPrediction
-
 from slicer import vtkMRMLScalarVolumeNode
 
 
@@ -160,6 +158,19 @@ class TextToMarkupsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._parameterNode = None
         self._parameterNodeGuiTag = None
 
+    def _ensureLogic(self, show_errors=True) -> bool:
+        if self.logic:
+            return True
+        try:
+            self.logic = TextToMarkupsLogic()
+            return True
+        except Exception as exc:
+            logging.exception("Failed to initialize TextToMarkups logic")
+            self.logic = None
+            if show_errors:
+                slicer.util.errorDisplay(f"Failed to initialize TextToMarkups logic:\n{exc}")
+            return False
+
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
         ScriptedLoadableModuleWidget.setup(self)
@@ -177,7 +188,7 @@ class TextToMarkupsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
-        self.logic = TextToMarkupsLogic()
+        self._ensureLogic(show_errors=False)
 
         # Connections
 
@@ -189,7 +200,8 @@ class TextToMarkupsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
 
         # Make sure parameter node is initialized (needed for module reload)
-        self.initializeParameterNode()
+        if self.logic:
+            self.initializeParameterNode()
 
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
@@ -223,6 +235,8 @@ class TextToMarkupsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Ensure parameter node exists and observed."""
         # Parameter node stores all user choices in parameter values, node selections, etc.
         # so that when the scene is saved and reloaded, these settings are restored.
+        if not self._ensureLogic(show_errors=False):
+            return
 
         self.setParameterNode(self.logic.getParameterNode())
 
@@ -263,8 +277,20 @@ class TextToMarkupsWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyButton(self) -> None:
         """Run processing when user clicks "Apply" button."""
+        if not self._ensureLogic():
+            return
+        if not self._parameterNode or not self._parameterNode.inputVolume:
+            slicer.util.errorDisplay("Select an input text node first.")
+            return
 
         self.ui.applyButton.text = "Processing..."
+        try:
+            import DBSShiftPrediction
+        except Exception as exc:
+            logging.exception("Failed to import DBSShiftPrediction")
+            slicer.util.errorDisplay(f"Failed to import DBSShiftPrediction:\n{exc}")
+            return
+
         logic = DBSShiftPrediction.MRI_MERLogic()
         # remove previous markup node with name electrodes
 

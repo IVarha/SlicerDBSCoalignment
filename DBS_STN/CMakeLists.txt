@@ -18,6 +18,7 @@ set(MODULE_PYTHON_RESOURCES
   Resources/UI/${MODULE_NAME}.ui
   Resources/nets/net_transformer.pt
   Resources/nets/mer_pca_mesh.pkl
+  Resources/nets/transformer_classifier_test.pt
 )
 
 #-----------------------------------------------------------------------------

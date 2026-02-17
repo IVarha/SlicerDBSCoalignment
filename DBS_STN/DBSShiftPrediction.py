@@ -1155,6 +1155,19 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         self._parameterNode : DBSShiftPredictionParameterNode = None
         self._parameterNodeGuiTag = None
 
+    def _ensureLogic(self, show_errors=True) -> bool:
+        if self.logic:
+            return True
+        try:
+            self.logic = MRI_MERLogic()
+            return True
+        except Exception as exc:
+            logging.exception("Failed to initialize DBSShiftPrediction logic")
+            self.logic = None
+            if show_errors:
+                slicer.util.errorDisplay(f"Failed to initialize DBSShiftPrediction logic:\n{exc}")
+            return False
+
     def setup(self) -> None:
         """
         Called when the user opens the module the first time and the widget is initialized.
@@ -1174,7 +1187,7 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
-        self.logic: MRI_MERLogic = MRI_MERLogic()
+        self._ensureLogic(show_errors=False)
         #print("MER logic created")
         # self._create_temp_folder()
         # Connections
@@ -1206,7 +1219,11 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         # self.lead_or_bind()
         # initialise variables
 
-        self.mer_transforms = _read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
+        try:
+            self.mer_transforms = _read_pickle(self.resourcePath('nets/mer_pca_mesh.pkl'))
+        except Exception:
+            logging.exception("Failed to load mer_pca_mesh.pkl")
+            self.mer_transforms = None
 
     def onInputTransformSelected(self, node: vtkMRMLTransformNode):
         self.to_mni = node
@@ -1244,6 +1261,8 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
 
     def onTextModified(self, node):
+        if not self._ensureLogic():
+            return
 
         _remove_previous_node("LeadOR: Classes")
         _remove_previous_node("LeadOR: Wrong Labels")
@@ -1354,6 +1373,8 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         # Parameter node stores all user choices in parameter values, node selections, etc.
         # so that when the scene is saved and reloaded, these settings are restored.
+        if not self._ensureLogic(show_errors=False):
+            return
 
         self.setParameterNode(self.logic.getParameterNode())
 
@@ -1409,6 +1430,8 @@ class DBSShiftPredictionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
         """
         Run processing when user clicks "Apply" button.
         """
+        if not self._ensureLogic():
+            return
         with slicer.util.tryWithErrorDisplay("Failed to compute results.", waitCursor=True):
             # Compute output
             self.logic.process(self.ui.inputSelector.currentNode(), self.ui.outputSelector.currentNode(),

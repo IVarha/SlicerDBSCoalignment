@@ -148,6 +148,19 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._parameterNode = None
         self._parameterNodeGuiTag = None
 
+    def _ensureLogic(self, show_errors=True) -> bool:
+        if self.logic:
+            return True
+        try:
+            self.logic = LabelConversionLogic()
+            return True
+        except Exception as exc:
+            logging.exception("Failed to initialize LabelConversion logic")
+            self.logic = None
+            if show_errors:
+                slicer.util.errorDisplay(f"Failed to initialize LabelConversion logic:\n{exc}")
+            return False
+
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
         ScriptedLoadableModuleWidget.setup(self)
@@ -165,7 +178,7 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Create logic class. Logic implements all computations that should be possible to run
         # in batch mode, without a graphical user interface.
-        self.logic = LabelConversionLogic()
+        self._ensureLogic(show_errors=False)
 
         # Connections
 
@@ -177,7 +190,8 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
         self.ui.applyConvert.clicked.connect(self.onApplyConvert)
         # Make sure parameter node is initialized (needed for module reload)
-        #self.initializeParameterNode()
+        if self.logic:
+            self.initializeParameterNode()
 
 
     def onApplyConvert(self):
@@ -217,6 +231,8 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Ensure parameter node exists and observed."""
         # Parameter node stores all user choices in parameter values, node selections, etc.
         # so that when the scene is saved and reloaded, these settings are restored.
+        if not self._ensureLogic(show_errors=False):
+            return
 
         self.setParameterNode(self.logic.getParameterNode())
 
@@ -253,6 +269,8 @@ class LabelConversionWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onApplyButton(self) -> None:
         """Run processing when user clicks "Apply" button."""
+        if not self._ensureLogic():
+            return
         with slicer.util.tryWithErrorDisplay(_("Failed to compute results."), waitCursor=True):
             # Compute output
             self.logic.process(self.ui.inputSelector.currentNode(), self.ui.outputSelector.currentNode(),
