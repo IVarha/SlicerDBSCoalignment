@@ -15,6 +15,7 @@ set(MODULE_PYTHON_RESOURCES
   Resources/nets/3.obj
   Resources/nets/cent_detect_hist.pkl
   Resources/nets/cent_pred.pt
+  Resources/nets/detect_mask.pkl
   Resources/nets/mer_pca_mesh.pkl
   Resources/nets/shape_hist.pkl
   Resources/nets/shape_pcas.pkl
