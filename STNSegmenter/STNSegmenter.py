@@ -2,6 +2,7 @@ import shlex
 import logging
 import os
 import pickle
+import platform
 import shlex
 import subprocess
 import sys
@@ -23,11 +24,39 @@ except ImportError:
 from dbs_image_utils.nets import CenterDetector, CenterAndPCANet
 
 
+def _install_antspyx() -> None:
+    if (
+        platform.system() == "Linux"
+        and sys.version_info[:2] == (3, 12)
+        and platform.machine().lower() in {"x86_64", "amd64"}
+    ):
+        import urllib.request
+
+        download_url = "https://app.box.com/shared/static/mu1gy26t80oopbtv3mndl5yveb6s4431.whl"
+        whl_filename = "antspyx-0.6.2-cp312-cp312-linux_x86_64.whl"
+        whl_path = Path(tempfile.gettempdir()) / whl_filename
+
+        logging.info("Downloading antspyx wheel from %s", download_url)
+        urllib.request.urlretrieve(download_url, str(whl_path))
+        logging.info("Downloaded antspyx wheel to %s", whl_path)
+
+        try:
+            slicer.util.pip_install(str(whl_path))
+        finally:
+            try:
+                whl_path.unlink()
+            except OSError:
+                pass
+        return
+
+    slicer.util.pip_install("antspyx")
+
+
 try:
     import ants
     import antstorch
 except ImportError:
-    slicer.util.pip_install('ants')
+    _install_antspyx()
     slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
     import antstorch
     import ants
@@ -151,6 +180,48 @@ def _load_torch_state_dict(
             raise RuntimeError(
                 f"Failed loading {model_name} weights after re-download: {second_error}"
             ) from second_error
+
+
+def _install_segm_runtime_dependencies() -> None:
+    slicer.util.pip_install("dbs-pure-lib")
+    slicer.util.pip_install("nibabel")
+    slicer.util.pip_install("intensity-normalization")
+    slicer.util.pip_install("git+https://github.com/ANTsX/ANTsTorch.git")
+
+
+def _import_segm_support():
+    last_error = None
+    for package_name in ("segm_lib", "Lib"):
+        try:
+            slicer_preprocessing = __import__(
+                f"{package_name}.slicer_preprocessing",
+                fromlist=["slicer_preprocessing"],
+            )
+            image_utils = __import__(
+                f"{package_name}.image_utils",
+                fromlist=["SlicerImage"],
+            )
+            return slicer_preprocessing, image_utils.SlicerImage
+        except ImportError as exc:
+            last_error = exc
+
+    _install_segm_runtime_dependencies()
+
+    for package_name in ("segm_lib", "Lib"):
+        try:
+            slicer_preprocessing = __import__(
+                f"{package_name}.slicer_preprocessing",
+                fromlist=["slicer_preprocessing"],
+            )
+            image_utils = __import__(
+                f"{package_name}.image_utils",
+                fromlist=["SlicerImage"],
+            )
+            return slicer_preprocessing, image_utils.SlicerImage
+        except ImportError as exc:
+            last_error = exc
+
+    raise last_error
 
 
 
@@ -435,14 +506,7 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
         with slicer.util.tryWithErrorDisplay(_("Failed to compute white matter segmentation."), waitCursor=True):
             print("start on onApplyWMSeg")
-            try:
-                from segm_lib import slicer_preprocessing
-            except ImportError:
-                slicer.util.pip_install(r'nibabel')
-                slicer.util.pip_install('intensity-normalization')
-                slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
-                slicer.util.pip_install('dbs-image-utils')
-                from segm_lib import slicer_preprocessing
+            slicer_preprocessing, unused_slicer_image = _import_segm_support()
 
             slicer_preprocessing.wm_segmentation(t1=str(t1_path),
                                                      out_folder=self.temp_workdir.name)
@@ -793,16 +857,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
 
     def coregistration_t2_t1(self, t1: vtkMRMLVolumeArchetypeStorageNode, t2: vtkMRMLVolumeArchetypeStorageNode,
                              out_name: str) -> None:
-        try:
-            from segm_lib import slicer_preprocessing
-            from segm_lib.image_utils import SlicerImage
-        except ImportError:
-            slicer.util.pip_install(r'nibabel')
-            slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
-            slicer.util.pip_install('dbs-image-utils')
-            from segm_lib import slicer_preprocessing
-            from segm_lib.image_utils import SlicerImage
+        slicer_preprocessing, unused_slicer_image = _import_segm_support()
 
         out_folder = str(Path(out_name).parent)
         t1_path = t1.GetFileName()
@@ -820,16 +875,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
          .rename((out_name)))
 
     def wm_segmentation(self, t1: str, out_folder: str) -> None:
-        try:
-            from segm_lib import slicer_preprocessing
-            from segm_lib.image_utils import SlicerImage
-        except ImportError:
-            slicer.util.pip_install(r'nibabel')
-            slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
-            slicer.util.pip_install('dbs-image-utils')
-            from segm_lib import slicer_preprocessing
-            from segm_lib.image_utils import SlicerImage
+        slicer_preprocessing, unused_slicer_image = _import_segm_support()
 
         slicer_preprocessing.wm_segmentation(t1, out_folder)
 
@@ -842,16 +888,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         return str(res)
 
     def intensity_normalisation(self, out_folder: str, t2_file_name: str) -> None:
-        try:
-            from segm_lib import slicer_preprocessing
-            from segm_lib.image_utils import SlicerImage
-        except ImportError:
-            slicer.util.pip_install(r'nibabel')
-            slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
-            slicer.util.pip_install('dbs-image-utils')
-            from segm_lib import slicer_preprocessing
-            from segm_lib.image_utils import SlicerImage
+        slicer_preprocessing, unused_slicer_image = _import_segm_support()
         slicer_preprocessing.intensity_normalisation(out_folder,t2_file_name)
 
     def two_step_coregistration(self, node_to_transform, workdir: str, method = "Rigid") -> vtkMRMLTransformNode:
@@ -906,15 +943,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
     def segmentSTNs(self, t2_node) -> Tuple[MESH_results, MESH_results]:
         mm_offset = 2
         print("Starting segmentation")
-        try:
-            from segm_lib.image_utils import SlicerImage
-        except ImportError:
-            slicer.util.pip_install(r'nibabel')
-            slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
-            slicer.util.pip_install('dbs-image-utils')
-            from segm_lib import slicer_preprocessing
-            from segm_lib.image_utils import SlicerImage
+        unused_slicer_preprocessing, SlicerImage = _import_segm_support()
 
         t2 = t2_node
         image_processor = SlicerImage(t2.GetImageData())
@@ -966,14 +995,7 @@ class STNSegmenterLogic(ScriptedLoadableModuleLogic):
         mesh = read_mesh(self.resourcePath('nets/3.obj'))
         mm_offset = 2
         # t2 = slicer.util.getNode("t2_normalised")
-        try:
-            from segm_lib.image_utils import SlicerImage
-        except ImportError:
-            slicer.util.pip_install(r'nibabel')
-            slicer.util.pip_install('intensity-normalization')
-            slicer.util.pip_install('git+https://github.com/ANTsX/ANTsTorch.git')
-            slicer.util.pip_install('dbs-image-utils')
-            from segm_lib.image_utils import SlicerImage
+        unused_slicer_preprocessing, SlicerImage = _import_segm_support()
 
         image_processor = SlicerImage(t2.GetImageData())
 

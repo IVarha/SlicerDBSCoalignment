@@ -4,6 +4,12 @@ set(MODULE_NAME STNSegmenter)
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
+  segm_lib/__init__.py
+  segm_lib/image_utils.py
+  segm_lib/mer_support.py
+  segm_lib/slicer_preprocessing.py
+  segm_lib/utils_file.py
+  segm_lib/visualisiation.py
   )
 
 set(MODULE_PYTHON_RESOURCES
