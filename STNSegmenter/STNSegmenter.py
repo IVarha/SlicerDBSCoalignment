@@ -523,7 +523,11 @@ class STNSegmenterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
         with slicer.util.tryWithErrorDisplay(_("Failed to normalize T2 intensity."), waitCursor=True):
             print("test onApplyIntensity")
-            t2_storage = check_storage_node(self.t2_node, self.temp_workdir).GetFileName()
+            coreg_t2_path = Path(self.temp_workdir.name) / "coreg_t2.nii.gz"
+            if coreg_t2_path.exists():
+                t2_storage = str(coreg_t2_path)
+            else:
+                t2_storage = check_storage_node(self.t2_node, self.temp_workdir).GetFileName()
             print(t2_storage)
             self.logic.intensity_normalisation(self.temp_workdir.name, t2_file_name=t2_storage)
             self.intensity_normalisation_done = True

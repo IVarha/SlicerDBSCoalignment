@@ -9,6 +9,13 @@ set(MODULE_PYTHON_SCRIPTS
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
   Resources/UI/${MODULE_NAME}.ui
+  Resources/eparams/STN_motor.nii.gz
+  Resources/eparams/STN_limbic.nii.gz
+  Resources/eparams/STN_associative.nii.gz
+  Resources/eparams/STNlabel.nii.gz
+  Resources/eparams/atlas_pts.txt
+  Resources/eparams/affine.txt
+  Resources/eparams/bspline.txt
   )
 
 #-----------------------------------------------------------------------------

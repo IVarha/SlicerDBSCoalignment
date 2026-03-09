@@ -24,6 +24,8 @@ import numpy as np
 
 
 def load_segmentation(nifti_path):
+    if not os.path.exists(nifti_path):
+        raise FileNotFoundError(f"Segmentation resource not found: {nifti_path}")
     # Load NIfTI segmentation file
     segmentation_node = slicer.util.loadSegmentation(nifti_path)
     return segmentation_node

@@ -100,8 +100,32 @@ def intensity_normalisation(out_folder, t2_file):
         "--verbose",
     ]
 
+    # Always provide a WM mask. If the mask grid differs from T2, resample it to T2 space
+    # with nearest-neighbor interpolation to keep labels discrete.
     if wm_mask_path.exists():
-        run_wm_slab_creation.extend(["--mask", str(wm_mask_path)])
+        try:
+            t2_shape = nib.load(str(t2_path)).shape[:3]
+            wm_shape = nib.load(str(wm_mask_path)).shape[:3]
+            print(f"Preparing WM mask for T2 normalization: T2 {t2_shape}, WM {wm_shape}")
+            import ants
+
+            t2_ants = ants.image_read(str(t2_path))
+            wm_ants = ants.image_read(str(wm_mask_path))
+            wm_resampled = ants.resample_image_to_target(
+                wm_ants, t2_ants, interp_type="nearestNeighbor"
+            )
+            wm_resampled = (wm_resampled > 0.5)
+            wm_resampled_path = Path(out_folder) / "wm_mask_resampled_to_t2.nii.gz"
+            ants.image_write(wm_resampled, str(wm_resampled_path))
+            run_wm_slab_creation.extend(["--mask", str(wm_resampled_path)])
+        except Exception as exc:
+            raise RuntimeError(
+                f"WM mask exists but could not be aligned to T2 space: {exc}"
+            ) from exc
+    else:
+        raise RuntimeError(
+            f"Expected WM mask not found: {wm_mask_path}. Run WM segmentation first."
+        )
 
     old_argv = sys.argv
     try:
@@ -109,6 +133,11 @@ def intensity_normalisation(out_folder, t2_file):
         intensity_cli_main()
     finally:
         sys.argv = old_argv
+
+    if not output_path.exists():
+        raise RuntimeError(
+            f"Intensity normalization did not produce output file: {output_path}"
+        )
 
 
 
