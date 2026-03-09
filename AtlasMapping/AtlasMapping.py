@@ -362,11 +362,15 @@ class AtlasMappingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._checkCanApply()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputMesh:
-            self.ui.applyButton.toolTip = _("Compute output volume")
+        if (
+            self._parameterNode
+            and self._parameterNode.inputMesh
+            and self._parameterNode.invertedVolume
+        ):
+            self.ui.applyButton.toolTip = _("Compute output transform")
             self.ui.applyButton.enabled = True
         else:
-            self.ui.applyButton.toolTip = _("Select input and output volume nodes")
+            self.ui.applyButton.toolTip = _("Select input mesh and output transform node")
             self.ui.applyButton.enabled = False
 
     def onApplyButton(self) -> None:
