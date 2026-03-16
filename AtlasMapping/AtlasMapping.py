@@ -1,5 +1,6 @@
 import logging
 import os
+import subprocess
 from typing import Annotated, Optional
 import slicer
 import vtk
@@ -123,6 +124,36 @@ def add_empty_voxels_nifti(nifti_image, num_empty_voxels):
     larger_nifti_image = nib.Nifti1Image(larger_image_data, new_affine)
 
     return larger_nifti_image
+
+
+def create_image_only_bspline_parameters(input_params_path, output_params_path):
+    """
+    Create a bspline parameter file variant that uses only image metric.
+    This avoids relying on point correspondences from arbitrary mesh vertex ordering.
+    """
+    with open(input_params_path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+
+    text = text.replace(
+        '(Registration "MultiMetricMultiResolutionRegistration")',
+        '(Registration "MultiResolutionRegistration")'
+    )
+    text = text.replace(
+        '(Metric "AdvancedNormalizedCorrelation" "CorrespondingPointsEuclideanDistanceMetric" )',
+        '(Metric "AdvancedNormalizedCorrelation")'
+    )
+
+    filtered_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(Metric1Weight"):
+            continue
+        if stripped.startswith("(Metric2Weight"):
+            continue
+        filtered_lines.append(line)
+
+    with open(output_params_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(filtered_lines) + "\n")
 
 #
 # AtlasMapping
@@ -367,10 +398,10 @@ class AtlasMappingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             and self._parameterNode.inputMesh
             and self._parameterNode.invertedVolume
         ):
-            self.ui.applyButton.toolTip = _("Compute output transform")
+            self.ui.applyButton.toolTip = _("Compute atlas mapping using selected input transform")
             self.ui.applyButton.enabled = True
         else:
-            self.ui.applyButton.toolTip = _("Select input mesh and output transform node")
+            self.ui.applyButton.toolTip = _("Select input mesh and input transform node")
             self.ui.applyButton.enabled = False
 
     def onApplyButton(self) -> None:
@@ -467,55 +498,96 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
         startTime = time.time()
         # generate temp folder
         import tempfile
-        dir = tempfile.TemporaryDirectory()
-        print("temp dir", dir.name)
+        working_dir_obj = tempfile.TemporaryDirectory()
+        working_dir = working_dir_obj.name
+        elastixParams = []
+        transform_params = []
+        print("temp dir", working_dir)
         try:
+            required_resources = [
+                resourcePath("eparams/STNlabel.nii.gz"),
+                resourcePath("eparams/affine.txt"),
+                resourcePath("eparams/bspline.txt"),
+            ]
+            for resource_file in required_resources:
+                if not os.path.exists(resource_file):
+                    raise FileNotFoundError(f"Required resource not found: {resource_file}")
+
+            if not inputMesh.GetPolyData() or not inputMesh.GetPolyData().GetPoints():
+                raise ValueError("Input mesh has no polydata points.")
+            if inputMesh.GetPolyData().GetPoints().GetNumberOfPoints() == 0:
+                raise ValueError("Input mesh has zero points.")
+
             # convert model to segmentation
             segmentation = convert_model_to_segmentation(inputMesh)
 
             # save segmentation to nifti using slicer
-            slicer.util.saveNode(segmentation, os.path.join(dir.name, "mesh_label.nii.gz"))
+            slicer.util.saveNode(segmentation, os.path.join(working_dir, "mesh_label.nii.gz"))
             # add extra voxels to nifti
 
-            nifti_image = nib.load(os.path.join(dir.name, "mesh_label.nii.gz"))
+            nifti_image = nib.load(os.path.join(working_dir, "mesh_label.nii.gz"))
             nifti_image = add_empty_voxels_nifti(nifti_image, 40)
-            nib.save(nifti_image, os.path.join(dir.name, "mesh_label.nii.gz"))
+            nib.save(nifti_image, os.path.join(working_dir, "mesh_label.nii.gz"))
 
-            # save mesh control points to file
-            write_points_to_file(inputMesh.GetPolyData(), os.path.join(dir.name, "mesh_points.txt"))
+            image_only_bspline = os.path.join(working_dir, "bspline_image_only.txt")
+            create_image_only_bspline_parameters(resourcePath("eparams/bspline.txt"), image_only_bspline)
 
             # coregistration run
             import Elastix
             elastix = Elastix.ElastixLogic()
 
             elastixParams = [
-                              "-f", os.path.join(dir.name, "mesh_label.nii.gz"),
-                              "-fp", os.path.join(dir.name, "mesh_points.txt"),
+                              "-f", os.path.join(working_dir, "mesh_label.nii.gz"),
                               "-m", resourcePath("eparams/STNlabel.nii.gz"),
-                              "-mp", resourcePath("eparams/atlas_pts.txt"),
                               "-p", resourcePath("eparams/affine.txt"),
-                              "-p", resourcePath("eparams/bspline.txt"),
-                              "-out", dir.name]
+                              "-p", image_only_bspline,
+                              "-out", working_dir]
             print( " ".join(elastixParams))
             ep = elastix.startElastix(elastixParams)
             elastix.logProcessOutput(ep)
             # edit transformix parameters
             transform_params = [
                 "-in", resourcePath(f"eparams{os.path.sep}STNlabel.nii.gz"),
-                "-tp", os.path.join(dir.name, "TransformParameters.1.txt"),
+                "-tp", os.path.join(working_dir, "TransformParameters.1.txt"),
                 "-def","all",
-                "-out", dir.name
+                "-out", working_dir
             ]
             tp = elastix.startTransformix(transform_params)
             # load transformation
             elastix.logProcessOutput(tp)
-            outputTransformPath = os.path.join(dir.name, "deformationField.nii.gz")
+            outputTransformPath = os.path.join(working_dir, "deformationField.nii.gz")
+            if not os.path.exists(outputTransformPath):
+                raise RuntimeError(f"Transformix did not produce deformation field: {outputTransformPath}")
             elastix.loadTransformFromFile(outputTransformPath, outputVolume)
+        except subprocess.CalledProcessError as e:
+            log_candidates = [
+                os.path.join(working_dir, "elastix.log"),
+                os.path.join(working_dir, "transformix.log"),
+            ]
+            log_summary = []
+            for log_path in log_candidates:
+                if os.path.exists(log_path):
+                    try:
+                        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                            lines = f.readlines()
+                            tail = "".join(lines[-40:]).strip()
+                            log_summary.append(f"{log_path}\n{tail}")
+                    except Exception as read_error:
+                        log_summary.append(f"{log_path}\n<failed to read log: {read_error}>")
+            log_text = "\n\n".join(log_summary) if log_summary else "<no elastix/transformix logs found>"
+            raise RuntimeError(
+                f"Elastix/Transformix failed with exit code {e.returncode}.\n"
+                f"Temporary output directory: {working_dir}\n"
+                f"Elastix command args: {' '.join(elastixParams)}\n"
+                f"Transformix command args: {' '.join(transform_params)}\n\n"
+                f"Log tail:\n{log_text}"
+            ) from e
         except Exception as e:
-            raise ValueError(e)
+            raise RuntimeError(f"Atlas mapping failed in temporary directory {working_dir}: {e}") from e
         finally:
+            # Keep temporary output available for troubleshooting.
+            # Set cleanup() here once diagnostics are no longer needed.
             pass
-            #dir.cleanup()
 
 
         stopTime = time.time()
