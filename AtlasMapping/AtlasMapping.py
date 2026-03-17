@@ -160,6 +160,49 @@ def create_image_only_bspline_parameters(input_params_path, output_params_path):
         f.write("\n".join(filtered_lines) + "\n")
 
 
+def create_aggressive_bspline_parameters(input_params_path, output_params_path):
+    with open(input_params_path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+
+    replacements = {
+        "(FinalGridSpacingInPhysicalUnits 16)": "(FinalGridSpacingInPhysicalUnits 8)",
+        "(MaximumNumberOfIterations 500)": "(MaximumNumberOfIterations 800)",
+        "(NumberOfSpatialSamples 2048)": "(NumberOfSpatialSamples 4096)",
+        '(ImageSampler "Random")': '(ImageSampler "RandomCoordinate")',
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    if "(MaximumStepLength " not in text:
+        text = text.replace(
+            "//(MaximumStepLength 1.0)",
+            "(MaximumStepLength 2.0)",
+        )
+
+    with open(output_params_path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def create_affine_refinement_parameters(input_params_path, output_params_path):
+    with open(input_params_path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+
+    replacements = {
+        '(Metric "AdvancedMattesMutualInformation")': '(Metric "AdvancedMeanSquares")',
+        '(AutomaticTransformInitialization "true")': '(AutomaticTransformInitialization "false")',
+        '(MaximumNumberOfIterations 250)': '(MaximumNumberOfIterations 400)',
+        '(NumberOfSpatialSamples 2048)': '(NumberOfSpatialSamples 4096)',
+        '(ImageSampler "Random")': '(ImageSampler "RandomCoordinate")',
+        '(DefaultPixelValue 0)': '(DefaultPixelValue -1)',
+        '(WriteResultImage "true")': '(WriteResultImage "false")',
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    with open(output_params_path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def create_signed_distance_map_nifti(input_path, output_path):
     try:
         import SimpleITK as sitk
@@ -467,8 +510,12 @@ class AtlasMappingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if self.logic.lastPrealignmentTranslation is not None:
                 self.logic._apply_translation_and_harden(seg_1, self.logic.lastPrealignmentTranslation)
 
-            # set and observe transform node to segment
+            # Apply the computed deformation to the atlas segmentation and harden it immediately.
+            # The generated transform node is only an internal registration artifact here and
+            # should not remain in the scene after the mapped atlas has been produced.
             seg_1.SetAndObserveTransformNodeID(result_transform.GetID())
+            slicer.vtkSlicerTransformLogic().hardenTransform(seg_1)
+            slicer.mrmlScene.RemoveNode(result_transform)
             # adjust_segment_colors(seg_1, segment_colors)
 
 #
@@ -987,17 +1034,23 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
             elastix_module_dir = os.path.dirname(os.path.abspath(Elastix.__file__))
             elastix_param_dir = os.path.join(elastix_module_dir, "Resources", "RegistrationParameters")
             rigid_params_path = os.path.join(elastix_param_dir, "Parameters_RigidAMS.txt")
-            bspline_params_path = os.path.join(elastix_param_dir, "Parameters_BSpline.txt")
-            for params_path in (rigid_params_path, bspline_params_path):
+            affine_template_path = os.path.join(elastix_param_dir, "Parameters_Affine.txt")
+            bspline_template_path = os.path.join(elastix_param_dir, "Parameters_BSpline.txt")
+            for params_path in (rigid_params_path, affine_template_path, bspline_template_path):
                 if not os.path.exists(params_path):
                     raise RuntimeError(f"Required Elastix parameter file not found: {params_path}")
-            # Keep the live module on the exact SlicerElastix parameter pair that already
-            # completed successfully on the exported distance maps. The earlier custom
-            # parameter files were the source of repeated metric failures and native crashes.
+            affine_params_path = os.path.join(working_dir, "Parameters_Affine_Refine.txt")
+            create_affine_refinement_parameters(affine_template_path, affine_params_path)
+            bspline_params_path = os.path.join(working_dir, "Parameters_BSpline_Aggressive.txt")
+            create_aggressive_bspline_parameters(bspline_template_path, bspline_params_path)
+            # Keep the rigid stage on the validated SlicerElastix preset, add affine refinement
+            # on the same distance-map metric, then make the nonrigid stage denser and less
+            # constrained so larger local deformations are possible.
             elastix_params = [
                 "-f", fixed_distance_path,
                 "-m", moving_distance_path,
                 "-p", rigid_params_path,
+                "-p", affine_params_path,
                 "-p", bspline_params_path,
                 "-out", working_dir,
             ]
@@ -1006,7 +1059,7 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
 
             transformix_params = [
                 "-in", moving_volume_path,
-                "-tp", os.path.join(working_dir, "TransformParameters.1.txt"),
+                "-tp", os.path.join(working_dir, "TransformParameters.2.txt"),
                 "-def", "all",
                 "-out", working_dir,
             ]
