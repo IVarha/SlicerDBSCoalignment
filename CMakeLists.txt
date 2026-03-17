@@ -9,7 +9,7 @@ set(EXTENSION_CONTRIBUTORS "Igor Varga")
 set(EXTENSION_DESCRIPTION "This is an Extension for DBS coalignment  ")
 set(EXTENSION_ICONURL "https://raw.githubusercontent.com/IVarha/SlicerDBSCoalignment/21f8e77355647928ca8a84a83815410ced77c186/DBS_STN/Resources/Icons/DBSShiftPrediction.png")
 set(EXTENSION_SCREENSHOTURLS "https://raw.githubusercontent.com/IVarha/SlicerDBSCoalignment/21f8e77355647928ca8a84a83815410ced77c186/DBS_STN/Resources/Icons/coalignment_screenshot.png")
-set(EXTENSION_DEPENDS "NA") # Specified as a list or "NA" if no dependencies
+set(EXTENSION_DEPENDS "SlicerElastix;SlicerNetstim") # AtlasMapping uses Elastix, DBS workflow integrates with Netstim/Lead-OR
 
 #-----------------------------------------------------------------------------
 # Extension dependencies
