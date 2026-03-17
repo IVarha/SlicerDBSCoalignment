@@ -1,5 +1,6 @@
 import logging
 import os
+import subprocess
 from typing import Annotated, Optional
 import slicer
 import vtk
@@ -46,8 +47,14 @@ def convert_model_to_segmentation(model_node, reference_volume_node=None) -> vtk
     labelmap_volume_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
     segmentation_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
     segmentation_node.CreateDefaultDisplayNodes()
+    if reference_volume_node:
+        segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(reference_volume_node)
+        segmentation = segmentation_node.GetSegmentation()
+        segmentation.SetConversionParameter("Oversampling factor", "1")
+        segmentation.SetConversionParameter("Crop to reference image geometry", "1")
     slicer.modules.segmentations.logic().ImportModelToSegmentationNode(model_node, segmentation_node)
     if reference_volume_node:
+        segmentation_node.CreateBinaryLabelmapRepresentation()
         slicer.modules.segmentations.logic().ExportVisibleSegmentsToLabelmapNode(
             segmentation_node,
             labelmap_volume_node,
@@ -114,6 +121,59 @@ def add_empty_voxels_nifti(nifti_image, num_empty_voxels):
     larger_nifti_image = nib.Nifti1Image(larger_image_data, new_affine)
 
     return larger_nifti_image
+
+
+def create_image_only_bspline_parameters(input_params_path, output_params_path):
+    with open(input_params_path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+
+    text = text.replace(
+        '(Registration "MultiMetricMultiResolutionRegistration")',
+        '(Registration "MultiResolutionRegistration")'
+    )
+    text = text.replace(
+        '(Metric "AdvancedNormalizedCorrelation" "CorrespondingPointsEuclideanDistanceMetric" )',
+        '(Metric "AdvancedNormalizedCorrelation")'
+    )
+    text = text.replace(
+        '(ImageSampler "RandomCoordinate")',
+        '(ImageSampler "RandomSparseMask")'
+    )
+    text = text.replace(
+        '(MaximumStepLength 1.0 1.0 1.0 1.0 1.0 1.0 0.5)',
+        '(MaximumStepLength 0.5 0.4 0.3 0.2 0.15 0.1 0.05)'
+    )
+
+    filtered_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(Metric1Weight"):
+            continue
+        if stripped.startswith("(Metric2Weight"):
+            continue
+        filtered_lines.append(line)
+
+    if not any(line.strip().startswith("(CheckNumberOfSamples") for line in filtered_lines):
+        filtered_lines.append('(CheckNumberOfSamples "false")')
+
+    with open(output_params_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(filtered_lines) + "\n")
+
+
+def create_signed_distance_map_nifti(input_path, output_path):
+    try:
+        import SimpleITK as sitk
+    except ImportError as exc:
+        raise RuntimeError("SimpleITK is required to create distance maps for mask registration.") from exc
+
+    binary_image = sitk.ReadImage(input_path)
+    distance_image = sitk.SignedMaurerDistanceMap(
+        sitk.Cast(binary_image > 0, sitk.sitkUInt8),
+        insideIsPositive=False,
+        squaredDistance=False,
+        useImageSpacing=True,
+    )
+    sitk.WriteImage(distance_image, output_path)
 
 
 #
@@ -404,6 +464,8 @@ class AtlasMappingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             result_transform = self.logic.process(meshN, self.ui.invertedOutputSelector.currentNode())
             if self.logic.lastTargetIsLeft:
                 self.logic._apply_x_mirror_and_harden(seg_1)
+            if self.logic.lastPrealignmentTranslation is not None:
+                self.logic._apply_translation_and_harden(seg_1, self.logic.lastPrealignmentTranslation)
 
             # set and observe transform node to segment
             seg_1.SetAndObserveTransformNodeID(result_transform.GetID())
@@ -428,6 +490,7 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
         """Called when the logic class is instantiated. Can be used for initializing member variables."""
         ScriptedLoadableModuleLogic.__init__(self)
         self.lastTargetIsLeft = False
+        self.lastPrealignmentTranslation = None
 
     def getParameterNode(self):
         return AtlasMappingParameterNode(super().getParameterNode())
@@ -579,6 +642,79 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
         volume_node.SetIJKToRASMatrix(updated_m)
 
     @staticmethod
+    def _pad_volume_to_include_bounds(volume_node, target_bounds, margin_voxels=8):
+        if not volume_node or not volume_node.GetImageData() or not target_bounds:
+            return
+
+        volume_bounds = AtlasMappingLogic._node_bounds(volume_node)
+        if not volume_bounds:
+            return
+
+        spacing = [abs(s) if s else 1.0 for s in volume_node.GetSpacing()]
+        pad_i_before = int(np.ceil(max(0.0, volume_bounds[0] - target_bounds[0]) / spacing[0])) + (margin_voxels if target_bounds[0] < volume_bounds[0] else 0)
+        pad_i_after = int(np.ceil(max(0.0, target_bounds[1] - volume_bounds[1]) / spacing[0])) + (margin_voxels if target_bounds[1] > volume_bounds[1] else 0)
+        pad_j_before = int(np.ceil(max(0.0, volume_bounds[2] - target_bounds[2]) / spacing[1])) + (margin_voxels if target_bounds[2] < volume_bounds[2] else 0)
+        pad_j_after = int(np.ceil(max(0.0, target_bounds[3] - volume_bounds[3]) / spacing[1])) + (margin_voxels if target_bounds[3] > volume_bounds[3] else 0)
+        pad_k_before = int(np.ceil(max(0.0, volume_bounds[4] - target_bounds[4]) / spacing[2])) + (margin_voxels if target_bounds[4] < volume_bounds[4] else 0)
+        pad_k_after = int(np.ceil(max(0.0, target_bounds[5] - volume_bounds[5]) / spacing[2])) + (margin_voxels if target_bounds[5] > volume_bounds[5] else 0)
+
+        if not any((pad_i_before, pad_i_after, pad_j_before, pad_j_after, pad_k_before, pad_k_after)):
+            return
+
+        arr = slicer.util.arrayFromVolume(volume_node)
+        padded = np.pad(
+            arr,
+            ((pad_k_before, pad_k_after), (pad_j_before, pad_j_after), (pad_i_before, pad_i_after)),
+            mode="constant",
+            constant_values=0,
+        )
+        slicer.util.updateVolumeFromArray(volume_node, padded)
+
+        ijk_to_ras_vtk = vtk.vtkMatrix4x4()
+        volume_node.GetIJKToRASMatrix(ijk_to_ras_vtk)
+        ijk_to_ras = np.array(
+            [[ijk_to_ras_vtk.GetElement(r, c) for c in range(4)] for r in range(4)],
+            dtype=np.float64,
+        )
+        pad_vec = np.array([pad_i_before, pad_j_before, pad_k_before], dtype=np.float64)
+        shift = ijk_to_ras[:3, :3] @ pad_vec
+        ijk_to_ras[:3, 3] -= shift
+
+        updated_m = vtk.vtkMatrix4x4()
+        for r in range(4):
+            for c in range(4):
+                updated_m.SetElement(r, c, float(ijk_to_ras[r, c]))
+        volume_node.SetIJKToRASMatrix(updated_m)
+
+    @staticmethod
+    def _bounds_center(bounds):
+        if not bounds:
+            return None
+        return np.array(
+            [
+                0.5 * (bounds[0] + bounds[1]),
+                0.5 * (bounds[2] + bounds[3]),
+                0.5 * (bounds[4] + bounds[5]),
+            ],
+            dtype=np.float64,
+        )
+
+    @staticmethod
+    def _apply_translation_and_harden(node, translation_xyz):
+        if translation_xyz is None:
+            return
+        translation_transform = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", "AtlasMapping_Prealign")
+        matrix = vtk.vtkMatrix4x4()
+        matrix.Identity()
+        matrix.SetElement(0, 3, float(translation_xyz[0]))
+        matrix.SetElement(1, 3, float(translation_xyz[1]))
+        matrix.SetElement(2, 3, float(translation_xyz[2]))
+        translation_transform.SetMatrixTransformToParent(matrix)
+        node.SetAndObserveTransformNodeID(translation_transform.GetID())
+        slicer.vtkSlicerTransformLogic().hardenTransform(node)
+        slicer.mrmlScene.RemoveNode(translation_transform)
+
+    @staticmethod
     def _volume_supports_bspline(volume_node) -> bool:
         image_data = volume_node.GetImageData()
         if not image_data:
@@ -599,6 +735,17 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
             if error_text and "ExceptionObject" in error_text:
                 raise RuntimeError(f"BRAINSFit failed with status '{status}'.\n{error_text}")
         return cli_node
+
+    @staticmethod
+    def _tail_log(log_path, max_lines=40):
+        if not os.path.exists(log_path):
+            return None
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            return "".join(lines[-max_lines:]).strip()
+        except Exception as exc:
+            return f"<failed to read log: {exc}>"
 
     @staticmethod
     def _volume_geom(volume_node):
@@ -652,6 +799,23 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
                 slicer.vtkSlicerTransformLogic().hardenTransform(candidate)
         return candidate
 
+    @staticmethod
+    def _linear_transform_matrix(transform_node):
+        if not transform_node or not transform_node.IsA("vtkMRMLLinearTransformNode"):
+            return None
+        matrix = vtk.vtkMatrix4x4()
+        transform_node.GetMatrixTransformToParent(matrix)
+        return np.array([[matrix.GetElement(r, c) for c in range(4)] for r in range(4)], dtype=np.float64)
+
+    @classmethod
+    def _transforms_approximately_inverse(cls, transform_a, transform_b, tolerance=1e-4):
+        matrix_a = cls._linear_transform_matrix(transform_a)
+        matrix_b = cls._linear_transform_matrix(transform_b)
+        if matrix_a is None or matrix_b is None:
+            return False
+        product = matrix_a @ matrix_b
+        return np.allclose(product, np.eye(4), atol=tolerance)
+
     def process(self,
                 inputMesh: vtkMRMLModelNode,
                 inputBaseTransform: vtkMRMLTransformNode) -> vtkMRMLTransformNode:
@@ -680,7 +844,10 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
         target_is_left = False
         selected_candidate_name = None
         input_mesh_parent_transform = None
+        elastix_params = []
+        transformix_params = []
         try:
+            self.lastPrealignmentTranslation = None
             required_resources = [
                 resourcePath("eparams/STNlabel.nii.gz"),
             ]
@@ -709,12 +876,19 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
             atlas_bounds = self._node_bounds(moving_volume_node)
             parent_transform = inputMesh.GetParentTransformNode()
             input_mesh_parent_transform = parent_transform
-            candidate_specs = [("raw", [])]
+            candidate_specs = []
+            # The displayed mesh may already be under a parent transform in Slicer even though
+            # its polydata is not hardened. Registration has to consider that visible transform
+            # chain, otherwise the rasterized fixed mask can be built in the wrong coordinate
+            # system and drift away from the atlas before Elastix even starts.
+            if parent_transform and inputBaseTransform and self._transforms_approximately_inverse(parent_transform, inputBaseTransform):
+                candidate_specs.append(("parent_then_selected", [parent_transform, inputBaseTransform]))
+            candidate_specs.append(("raw", []))
             if parent_transform:
                 candidate_specs.append(("parent_only", [parent_transform]))
             if inputBaseTransform and not self._transform_is_identity(inputBaseTransform):
                 candidate_specs.append(("selected_only", [inputBaseTransform]))
-                if parent_transform:
+                if parent_transform and ("parent_then_selected", [parent_transform, inputBaseTransform]) not in candidate_specs:
                     candidate_specs.append(("parent_then_selected", [parent_transform, inputBaseTransform]))
 
             best_score = -1.0
@@ -735,7 +909,18 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
             if not registration_mesh:
                 raise RuntimeError("Failed to construct registration mesh candidate.")
             selected_candidate_name = best_name
-            logging.info(f"AtlasMapping selected registration candidate '{best_name}' with overlap score {best_score}.")
+            logging.info(f"AtlasMapping selected registration candidate '{best_name}' with bounds score {best_score}.")
+
+            registration_center = self._bounds_center(self._node_bounds(registration_mesh))
+            atlas_center = self._bounds_center(self._node_bounds(moving_volume_node))
+            if registration_center is not None and atlas_center is not None:
+                self.lastPrealignmentTranslation = tuple((registration_center - atlas_center).tolist())
+                self._apply_translation_and_harden(moving_volume_node, self.lastPrealignmentTranslation)
+
+            # Expand the atlas reference grid before rasterizing the mesh. Without this,
+            # Slicer can clip the mesh-derived labelmap to the original atlas FOV, which
+            # then yields zero mask overlap and can cascade into native Elastix/Slicer crashes.
+            self._pad_volume_to_include_bounds(moving_volume_node, self._node_bounds(registration_mesh))
 
             # Export mesh to labelmap using atlas geometry to avoid degenerate labelmap spacing.
             labelmap_segmentation = convert_model_to_segmentation(registration_mesh, moving_volume_node)
@@ -748,13 +933,41 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
             self._ensure_non_zero_spacing(moving_volume_node)
             self._pad_degenerate_volume_axes(fixed_volume_node)
             self._pad_degenerate_volume_axes(moving_volume_node)
-            if self._non_zero_voxel_count(fixed_volume_node) == 0:
+            fixed_mask_array = slicer.util.arrayFromVolume(fixed_volume_node) > 0
+            moving_mask_array = slicer.util.arrayFromVolume(moving_volume_node) > 0
+            fixed_voxels = int(np.count_nonzero(fixed_mask_array))
+            overlap_voxels = int(np.count_nonzero(fixed_mask_array & moving_mask_array))
+            if fixed_voxels == 0:
                 raise RuntimeError(
                     "Prepared fixed registration labelmap is empty.\n"
                     f"Registration mesh bounds: {self._node_bounds(registration_mesh)}\n"
                     f"Moving atlas bounds: {self._node_bounds(moving_volume_node)}\n"
                     f"Fixed labelmap bounds: {self._node_bounds(fixed_volume_node)}"
                 )
+            if overlap_voxels == 0:
+                logging.warning(
+                    "Prepared fixed registration labelmap has zero voxel overlap with the moving atlas mask. "
+                    "Proceeding with distance-map registration without binary masks. "
+                    f"Selected candidate: {selected_candidate_name}; "
+                    f"Registration mesh bounds: {self._node_bounds(registration_mesh)}; "
+                    f"Moving atlas bounds: {self._node_bounds(moving_volume_node)}; "
+                    f"Fixed labelmap bounds: {self._node_bounds(fixed_volume_node)}; "
+                    f"Fixed voxels: {fixed_voxels}; "
+                    f"Moving voxels: {int(np.count_nonzero(moving_mask_array))}; "
+                    f"Overlap voxels: {overlap_voxels}"
+                )
+
+            fixed_volume_path = os.path.join(working_dir, "mesh_label.nii.gz")
+            moving_volume_path = os.path.join(working_dir, "moving_atlas_label.nii.gz")
+            if not slicer.util.saveNode(fixed_volume_node, fixed_volume_path):
+                raise RuntimeError(f"Failed to save fixed registration volume: {fixed_volume_path}")
+            if not slicer.util.saveNode(moving_volume_node, moving_volume_path):
+                raise RuntimeError(f"Failed to save moving atlas volume: {moving_volume_path}")
+
+            fixed_distance_path = os.path.join(working_dir, "mesh_distance.nii.gz")
+            moving_distance_path = os.path.join(working_dir, "moving_atlas_distance.nii.gz")
+            create_signed_distance_map_nifti(fixed_volume_path, fixed_distance_path)
+            create_signed_distance_map_nifti(moving_volume_path, moving_distance_path)
 
             result_transform = slicer.mrmlScene.AddNewNodeByClass(
                 "vtkMRMLTransformNode",
@@ -763,54 +976,74 @@ class AtlasMappingLogic(ScriptedLoadableModuleLogic):
             if selected_candidate_name == "raw" and input_mesh_parent_transform:
                 result_transform.SetAndObserveTransformNodeID(input_mesh_parent_transform.GetID())
 
-            use_bspline = self._volume_supports_bspline(fixed_volume_node) and self._volume_supports_bspline(moving_volume_node)
-            brainsfit_parameters = {
-                "fixedVolume": fixed_volume_node.GetID(),
-                "movingVolume": moving_volume_node.GetID(),
-                # Match prior elastix flow more closely: affine + bspline only.
-                "initializeTransformMode": "useGeometryAlign",
-                "useAffine": True,
-                "useBSpline": use_bspline,
-                "samplingPercentage": 0.01,
-                "maskProcessingMode": "NOMASK",
-            }
-            if use_bspline:
-                brainsfit_parameters["bsplineTransform"] = result_transform.GetID()
-                brainsfit_parameters["splineGridSize"] = "4,4,4"
-            else:
-                brainsfit_parameters["linearTransform"] = result_transform.GetID()
             try:
-                self._run_brainsfit(brainsfit_parameters)
-            except RuntimeError as primary_error:
-                # Retry with a safer affine-only setup for cases where ITK reports invalid spacing/grid.
-                if "Zero-valued spacing" not in str(primary_error):
-                    raise RuntimeError(
-                        f"{primary_error}\n"
-                        f"Fixed geometry: {self._volume_geom(fixed_volume_node)}\n"
-                        f"Moving geometry: {self._volume_geom(moving_volume_node)}\n"
-                        f"Temporary output directory: {working_dir}"
-                    ) from primary_error
+                import Elastix
+            except ImportError as exc:
+                raise RuntimeError(
+                    "SlicerElastix is not available in this Slicer session. Restart Slicer after installing the extension."
+                ) from exc
 
-                fallback_parameters = {
-                    "fixedVolume": fixed_volume_node.GetID(),
-                    "movingVolume": moving_volume_node.GetID(),
-                    "linearTransform": result_transform.GetID(),
-                    "initializeTransformMode": "useGeometryAlign",
-                    "useRigid": True,
-                    "useAffine": True,
-                    "useBSpline": False,
-                    "samplingPercentage": 0.01,
-                    "maskProcessingMode": "NOMASK",
-                }
-                try:
-                    self._run_brainsfit(fallback_parameters)
-                except RuntimeError as fallback_error:
-                    raise RuntimeError(
-                        f"{fallback_error}\n"
-                        f"Fixed geometry: {self._volume_geom(fixed_volume_node)}\n"
-                        f"Moving geometry: {self._volume_geom(moving_volume_node)}\n"
-                        f"Temporary output directory: {working_dir}"
-                    ) from fallback_error
+            elastix_logic = Elastix.ElastixLogic()
+            elastix_module_dir = os.path.dirname(os.path.abspath(Elastix.__file__))
+            elastix_param_dir = os.path.join(elastix_module_dir, "Resources", "RegistrationParameters")
+            rigid_params_path = os.path.join(elastix_param_dir, "Parameters_RigidAMS.txt")
+            bspline_params_path = os.path.join(elastix_param_dir, "Parameters_BSpline.txt")
+            for params_path in (rigid_params_path, bspline_params_path):
+                if not os.path.exists(params_path):
+                    raise RuntimeError(f"Required Elastix parameter file not found: {params_path}")
+            # Keep the live module on the exact SlicerElastix parameter pair that already
+            # completed successfully on the exported distance maps. The earlier custom
+            # parameter files were the source of repeated metric failures and native crashes.
+            elastix_params = [
+                "-f", fixed_distance_path,
+                "-m", moving_distance_path,
+                "-p", rigid_params_path,
+                "-p", bspline_params_path,
+                "-out", working_dir,
+            ]
+            elastix_process = elastix_logic.startElastix(elastix_params)
+            elastix_logic.logProcessOutput(elastix_process)
+
+            transformix_params = [
+                "-in", moving_volume_path,
+                "-tp", os.path.join(working_dir, "TransformParameters.1.txt"),
+                "-def", "all",
+                "-out", working_dir,
+            ]
+            transformix_process = elastix_logic.startTransformix(transformix_params)
+            elastix_logic.logProcessOutput(transformix_process)
+
+            output_transform_candidates = [
+                os.path.join(working_dir, "deformationField.mhd"),
+                os.path.join(working_dir, "deformationField.nii.gz"),
+            ]
+            output_transform_path = next((path for path in output_transform_candidates if os.path.exists(path)), None)
+            if output_transform_path is None:
+                raise RuntimeError(
+                    "Transformix did not produce a deformation field. Checked: "
+                    + ", ".join(output_transform_candidates)
+                )
+            elastix_logic.loadTransformFromFile(output_transform_path, result_transform)
+        except subprocess.CalledProcessError as e:
+            elastix_log_path = os.path.join(working_dir, "elastix.log")
+            transformix_log_path = os.path.join(working_dir, "transformix.log")
+            elastix_log_tail = self._tail_log(elastix_log_path)
+            transformix_log_tail = self._tail_log(transformix_log_path)
+            log_sections = []
+            if elastix_log_tail is not None:
+                log_sections.append(f"{elastix_log_path}\n{elastix_log_tail}")
+            if transformix_log_tail is not None:
+                log_sections.append(f"{transformix_log_path}\n{transformix_log_tail}")
+            logs_text = "\n\n".join(log_sections) if log_sections else "<no elastix/transformix logs found>"
+            raise RuntimeError(
+                f"Elastix/Transformix failed with exit code {e.returncode}.\n"
+                f"Fixed geometry: {self._volume_geom(fixed_volume_node)}\n"
+                f"Moving geometry: {self._volume_geom(moving_volume_node)}\n"
+                f"Elastix command args: {' '.join(elastix_params)}\n"
+                f"Transformix command args: {' '.join(transformix_params)}\n"
+                f"Temporary output directory: {working_dir}\n\n"
+                f"Log tail:\n{logs_text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Atlas mapping failed in temporary directory {working_dir}: {e}") from e
         finally:
