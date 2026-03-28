@@ -27,7 +27,8 @@ def convert_to_markup_node(df_text):
 
     # read electrode from text ()
     cols = [ x for x in df_text.columns if x.endswith('XYZ')]
-    df_text = df_text[cols].map(lambda x: [float(a) for a in x.split(';')])
+    # DataFrame.map does not exist, the element-wise transformation must use applymap.
+    df_text = df_text[cols].applymap(lambda x: [float(a) for a in x.split(';')])
 
 
     for col in cols:
